@@ -261,11 +261,8 @@ The schema seeds these accounts for testing. All passwords are hashed with bcryp
 |---|---|---|
 | **Admin** | admin@hostelhub.co.ke | Full platform access |
 | **Owner** | mary.wanjiku@gmail.com | Has 2 listed hostels |
-| **Owner** | peter.otieno@gmail.com | Has 2 listed hostels |
 | **Owner** | grace.muthoni@gmail.com | Has 1 listed hostel |
 | **Student** | brian.kamau@student.uon.ac.ke | UoN, CS Year 2 |
-| **Student** | aisha.hassan@student.ku.ac.ke | KU, Nursing Year 1 |
-| **Student** | kevin.mwangi@student.mku.ac.ke | MKU, Business Year 3 |
 
 > **Quick test login:** Go to `http://localhost:3000#login` and enter any of the emails above with password `password`.
 
@@ -544,12 +541,6 @@ Remove: deleted code or files
 Docs: documentation changes only
 Style: CSS / UI changes only
 ```
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
 ---
 
