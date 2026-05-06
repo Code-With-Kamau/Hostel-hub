@@ -1,46 +1,108 @@
 const axios = require('axios');
 
 async function getAccessToken() {
-  const { MPESA_CONSUMER_KEY: key, MPESA_CONSUMER_SECRET: secret, MPESA_ENV: env } = process.env;
-  const base = env === 'production' ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke';
-  const { data } = await axios.get(`${base}/oauth/v1/generate?grant_type=client_credentials`,
-    { auth: { username: key, password: secret } });
-  return data.access_token;
-}
+  const key = process.env.MPESA_CONSUMER_KEY?.trim();
+  const secret = process.env.MPESA_CONSUMER_SECRET?.trim();
 
-function formatPhone(phone) {
-  let p = phone.replace(/\D/g, '');
-  if (p.startsWith('0')) p = '254' + p.slice(1);
-  if (p.startsWith('+')) p = p.slice(1);
-  return p;
-}
+  const base = 'https://sandbox.safaricom.co.ke';
 
-function assertMpesaConfigured() {
-  const missing = [];
-  if (!process.env.MPESA_CONSUMER_KEY) missing.push('MPESA_CONSUMER_KEY');
-  if (!process.env.MPESA_CONSUMER_SECRET) missing.push('MPESA_CONSUMER_SECRET');
-  if (!process.env.MPESA_SHORTCODE) missing.push('MPESA_SHORTCODE');
-  if (!process.env.MPESA_PASSKEY) missing.push('MPESA_PASSKEY');
-  if (!process.env.MPESA_CALLBACK_URL) missing.push('MPESA_CALLBACK_URL');
-  if (missing.length) {
-    throw new Error(`M-Pesa not configured (missing: ${missing.join(', ')}).`);
+  try {
+    const { data } = await axios.get(
+      `${base}/oauth/v1/generate?grant_type=client_credentials`,
+      {
+        auth: { username: key, password: secret },
+        timeout: 15000,
+      }
+    );
+    console.log('✅ Access token OK');
+    return data.access_token;
+  } catch (err) {
+    const errMsg = err.response?.data?.errorMessage || err.message;
+    const status = err.response?.status;
+    console.log('❌ Token fetch failed. Status:', status, 'Message:', errMsg);
+    throw new Error(`M-Pesa token failed (${status}): ${errMsg}`);
   }
 }
 
-async function stkPush(phone, amount, bookingId, desc = 'HostelHub Deposit') {
-  assertMpesaConfigured();
-  const token = await getAccessToken();
-  const base = process.env.MPESA_ENV === 'production' ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke';
-  const timestamp = new Date().toISOString().replace(/[-T:.Z]/g, '').slice(0, 14);
-  const password = Buffer.from(process.env.MPESA_SHORTCODE + process.env.MPESA_PASSKEY + timestamp).toString('base64');
-  const { data } = await axios.post(`${base}/mpesa/stkpush/v1/processrequest`, {
-    BusinessShortCode: process.env.MPESA_SHORTCODE, Password: password, Timestamp: timestamp,
-    TransactionType: 'CustomerPayBillOnline', Amount: Math.ceil(amount),
-    PartyA: formatPhone(phone), PartyB: process.env.MPESA_SHORTCODE,
-    PhoneNumber: formatPhone(phone), CallBackURL: process.env.MPESA_CALLBACK_URL,
-    AccountReference: `HOSTEL${bookingId}`, TransactionDesc: desc,
-  }, { headers: { Authorization: `Bearer ${token}` } });
-  return data;
+function formatPhone(phone) {
+  let p = phone.toString().trim().replace(/\D/g, '');
+  if (p.startsWith('0')) p = '254' + p.slice(1);
+  if (p.startsWith('+')) p = p.slice(1);
+  if (!p.startsWith('254')) p = '254' + p;
+  console.log('Formatted phone:', p);
+  return p;
 }
 
-module.exports = { stkPush, formatPhone, assertMpesaConfigured };
+async function stkPush(phone, amount, bookingId, desc = 'HostelHub Deposit') {
+  const shortcode = process.env.MPESA_SHORTCODE?.trim();
+  const passkey = process.env.MPESA_PASSKEY?.trim();
+  const callbackUrl = process.env.MPESA_CALLBACK_URL?.trim();
+  const base = 'https://sandbox.safaricom.co.ke';
+
+  // Validate all required env vars before making any request
+  if (!shortcode || !passkey || !callbackUrl) {
+    throw new Error(`Missing M-Pesa config — SHORTCODE: ${shortcode}, PASSKEY: ${!!passkey}, CALLBACK: ${callbackUrl}`);
+  }
+
+  console.log('=== STK PUSH START ===');
+  console.log('Shortcode:', shortcode);
+  console.log('CallbackURL:', callbackUrl);
+  console.log('Amount:', Math.ceil(amount));
+
+  const token = await getAccessToken();
+
+  // Generate timestamp in format YYYYMMDDHHmmss
+  const now = new Date();
+  const pad = (n) => n.toString().padStart(2, '0');
+  const timestamp =
+    now.getFullYear().toString() +
+    pad(now.getMonth() + 1) +
+    pad(now.getDate()) +
+    pad(now.getHours()) +
+    pad(now.getMinutes()) +
+    pad(now.getSeconds());
+
+  console.log('Timestamp:', timestamp);
+
+  const password = Buffer.from(shortcode + passkey + timestamp).toString('base64');
+
+  const payload = {
+    BusinessShortCode: shortcode,
+    Password: password,
+    Timestamp: timestamp,
+    TransactionType: 'CustomerPayBillOnline',
+    Amount: Math.ceil(parseFloat(amount)),
+    PartyA: formatPhone(phone),
+    PartyB: shortcode,
+    PhoneNumber: formatPhone(phone),
+    CallBackURL: callbackUrl,
+    AccountReference: `HOSTEL${bookingId}`,
+    TransactionDesc: desc,
+  };
+
+  console.log('Payload (no password):', { ...payload, Password: '***' });
+
+  try {
+    const { data } = await axios.post(
+      `${base}/mpesa/stkpush/v1/processrequest`,
+      payload,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 15000,
+      }
+    );
+    console.log('✅ STK Push success:', data);
+    return data;
+  } catch (err) {
+    const status = err.response?.status;
+    const errData = err.response?.data;
+    console.log('❌ STK Push failed. Status:', status);
+    console.log('❌ STK Push error body:', JSON.stringify(errData, null, 2));
+    throw new Error(`STK Push failed (${status}): ${errData?.errorMessage || errData?.ResultDesc || err.message}`);
+  }
+}
+
+module.exports = { stkPush, formatPhone };6
