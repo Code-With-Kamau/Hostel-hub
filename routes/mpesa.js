@@ -3,45 +3,62 @@ const db = require('../database/db');
 const { authenticateToken } = require('../middleware/auth');
 const mpesa = require('../config/mpesa');
 
-router.get('/status', (req, res) => {
-  try {
-    mpesa.assertMpesaConfigured();
-    res.json({
-      success: true,
-      configured: true,
-      env: process.env.MPESA_ENV || 'sandbox',
-      shortcode: process.env.MPESA_SHORTCODE ? String(process.env.MPESA_SHORTCODE) : null,
-      callbackUrl: process.env.MPESA_CALLBACK_URL || null,
-    });
-  } catch (e) {
-    res.json({
-      success: true,
-      configured: false,
-      message: e.message,
-      env: process.env.MPESA_ENV || 'sandbox',
-      shortcode: process.env.MPESA_SHORTCODE ? String(process.env.MPESA_SHORTCODE) : null,
-      callbackUrl: process.env.MPESA_CALLBACK_URL || null,
-    });
-  }
-});
-
 router.post('/pay', authenticateToken, async (req, res) => {
   try {
     const { booking_id, phone } = req.body;
-    const [rows] = await db.execute('SELECT * FROM bookings WHERE id=? AND student_id=?', [booking_id, req.user.id]);
-    if (!rows.length) return res.json({ success: false, message: 'Booking not found' });
-    const booking = rows[0];
-    try {
-      const data = await mpesa.stkPush(phone, booking.deposit_amount, booking_id, `HostelHub Deposit Hostel#${booking.hostel_id}`);
-      await db.execute('INSERT INTO payments (booking_id,user_id,amount,phone,mpesa_checkout_id,status) VALUES (?,?,?,?,?,"pending")',
-        [booking_id, req.user.id, booking.deposit_amount, phone, data.CheckoutRequestID]);
-      res.json({ success: true, message: 'STK Push sent! Check your phone.', checkoutId: data.CheckoutRequestID });
-    } catch (mpesaErr) {
-      res.json({ success: false, message: mpesaErr.message });
-    }
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
 
+    console.log('=== PAY ROUTE HIT ===');
+    console.log('booking_id received:', booking_id);
+    console.log('phone received:', phone);
+    console.log('req.user.id:', req.user.id);
+    console.log('req.user:', req.user);
+
+    // Check booking exists at all (no student filter yet)
+    const [allBookings] = await db.execute(
+      'SELECT id, student_id, status, deposit_amount FROM bookings WHERE id=?',
+      [booking_id]
+    );
+    console.log('Booking found (no filter):', allBookings);
+
+    // Now check with student filter
+    const [rows] = await db.execute(
+      'SELECT * FROM bookings WHERE id=? AND student_id=?',
+      [booking_id, req.user.id]
+    );
+    console.log('Booking found (with student filter):', rows);
+
+    if (!rows.length) {
+      console.log('❌ BOOKING NOT FOUND — booking student_id:', allBookings[0]?.student_id, '| req.user.id:', req.user.id);
+      return res.json({ success: false, message: 'Booking not found' });
+    }
+
+    const booking = rows[0];
+    console.log('✅ Booking found:', booking.id, 'amount:', booking.deposit_amount);
+
+    const mpesa = require('../config/mpesa');
+    const data = await mpesa.stkPush(
+      phone,
+      booking.deposit_amount,
+      booking_id,
+      `HostelHub Deposit Hostel#${booking.hostel_id}`
+    );
+
+    await db.execute(
+      'INSERT INTO payments (booking_id,user_id,amount,phone,mpesa_checkout_id) VALUES (?,?,?,?,?)',
+      [booking_id, req.user.id, booking.deposit_amount, phone, data.CheckoutRequestID]
+    );
+
+    res.json({ 
+      success: true, 
+      message: 'STK Push sent! Check your phone.',
+      checkoutId: data.CheckoutRequestID 
+    });
+
+  } catch (e) {
+    console.log('❌ PAY ROUTE ERROR:', e.message);
+    res.json({ success: false, message: e.message });
+  }
+});
 // M-Pesa callback
 router.post('/callback', async (req, res) => {
   try {
@@ -68,8 +85,7 @@ router.post('/callback', async (req, res) => {
     } else {
       await db.execute('UPDATE payments SET status="failed" WHERE mpesa_checkout_id=?', [checkoutId]);
     }
-    // Daraja requires a fast 200 OK response for callbacks.
-    res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
+    res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
   } catch (e) { res.json({ ResultCode: 0, ResultDesc: 'Accepted' }); }
 });
 
