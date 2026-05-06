@@ -1,4 +1,4 @@
-// routes/booking.js
+// booking.js
 const router = require('express').Router();
 const db = require('../database/db');
 const { authenticateToken, requireRole } = require('../middleware/auth');
