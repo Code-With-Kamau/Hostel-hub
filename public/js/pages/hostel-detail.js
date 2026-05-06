@@ -1,3 +1,4 @@
+//hostel-detail.js ──
 const HostelDetail = {
   hostel: null, imgIdx: 0, selRating: 0,
 
@@ -267,26 +268,43 @@ const HostelDetail = {
   async confirmBook(hostelId) {
     const btn = document.getElementById('confirm-book-btn');
     btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing…';
+    
     try {
       const wantsRoommate = document.getElementById('want-roommate')?.checked || false;
-      const res = await API.book({ hostel_id: hostelId,
+      
+      const payload = {
+        hostel_id: hostelId,
         move_in_date: document.getElementById('move-in').value,
         duration_months: document.getElementById('duration').value,
         notes: document.getElementById('book-notes').value,
         wants_roommate: wantsRoommate,
         roommate_gender: document.getElementById('roommate-gender')?.value || 'any',
-      });
+      };
+      
+      console.log('1. Sending booking payload:', payload); // DEBUG
+      
+      const res = await API.book(payload);
+      
+      console.log('2. Booking API response:', res); // DEBUG
+      
       if (!res.success) throw new Error(res.message);
+      
+      console.log('3. Booking object:', res.booking); // DEBUG
+      console.log('4. Booking ID:', res.booking?.id); // DEBUG
+      
       closeModal({});
       showToast('✅ Booking created! Pay deposit to confirm.', 'success');
       setTimeout(() => this.showPayModal(res.booking), 600);
+      
     } catch(e) {
+      console.log('ERROR in confirmBook:', e.message); // DEBUG
       showToast(e.message, 'error');
-      btn.disabled = false; btn.innerHTML = '<i class="fas fa-calendar-check"></i> Confirm Booking';
+      btn.disabled = false; 
+      btn.innerHTML = '<i class="fas fa-calendar-check"></i> Confirm Booking';
     }
   },
-
   showPayModal(booking) {
+    console.log('Booking object received:', booking);
     openModal(`
       <div style="text-align:center">
         <div style="font-size:3rem;margin-bottom:6px">📱</div>
@@ -313,18 +331,38 @@ const HostelDetail = {
       </div>`);
   },
 
-  async processPay(bookingId, amount) {
-    const phone = document.getElementById('mpesa-phone').value;
-    if (!phone) { showToast('Enter your M-Pesa number', 'error'); return; }
-    const btn = document.getElementById('pay-btn');
-    btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…';
-    try {
-      const res = await API.pay({ booking_id: bookingId, phone });
-      if (!res.success) throw new Error(res.message);
-      closeModal({}); showToast('📱 Check your phone for M-Pesa PIN prompt!', 'success', 6000);
-    } catch(e) { showToast(e.message, 'error'); btn.disabled = false; btn.innerHTML = `<i class="fas fa-mobile-alt"></i> Pay ${formatKES(amount)}`; }
-  },
+async processPay(bookingId, amount) {
+  console.log('=== processPay called ===');
+  console.log('bookingId:', bookingId);
+  console.log('amount:', amount);
+  console.log('type of bookingId:', typeof bookingId);
 
+  const phone = document.getElementById('mpesa-phone').value;
+  console.log('phone:', phone);
+
+  if (!phone) { showToast('Enter your M-Pesa number', 'error'); return; }
+
+  const btn = document.getElementById('pay-btn');
+  btn.disabled = true; 
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…';
+
+  try {
+    const payload = { booking_id: bookingId, phone };
+    console.log('Sending payload to /api/mpesa/pay:', payload);
+
+    const res = await API.pay(payload);
+    console.log('Response from /api/mpesa/pay:', res);
+
+    if (!res.success) throw new Error(res.message);
+    closeModal({}); 
+    showToast('📱 Check your phone for M-Pesa PIN prompt!', 'success', 6000);
+  } catch(e) { 
+    console.log('processPay error:', e.message);
+    showToast(e.message, 'error'); 
+    btn.disabled = false; 
+    btn.innerHTML = `<i class="fas fa-mobile-alt"></i> Pay ${formatKES(amount)}`; 
+  }
+},
   async simulatePay(bookingId) {
     const phone = document.getElementById('mpesa-phone')?.value || AUTH.user.phone || '0700000000';
     const res = await API.simulatePay({ booking_id: bookingId, phone });
