@@ -1,274 +1,409 @@
-// ── pages/owner.js ──
-const OwnerPage = {
-  render() {
-    document.getElementById('app-content').innerHTML = `
-      <div class="dashboard-layout">
-        <aside class="dashboard-sidebar">
-          <div class="sidebar-user"><img src="/uploads/profiles/default_avatar.png" onerror="this.src='${CONFIG.DEFAULT_AVATAR}'" /><h4>${AUTH.user.name}</h4><p>🏢 Hostel Owner</p></div>
-          <ul class="sidebar-nav">
-            <div class="sidebar-section">Dashboard</div>
-            <li class="sidebar-nav-item active" onclick="OwnerPage.tab('overview',this)"><i class="fas fa-tachometer-alt"></i> Overview</li>
-            <li class="sidebar-nav-item" onclick="OwnerPage.tab('my-hostels',this)"><i class="fas fa-building"></i> My Hostels</li>
-            <li class="sidebar-nav-item" onclick="OwnerPage.tab('add-hostel',this)"><i class="fas fa-plus-circle"></i> Add Hostel</li>
-            <li class="sidebar-nav-item" onclick="OwnerPage.tab('bookings',this)"><i class="fas fa-calendar-alt"></i> Bookings</li>
-            <div class="sidebar-section">Account</div>
-            <li class="sidebar-nav-item" onclick="DashboardPage.tabProfile(document.getElementById('owner-content'))"><i class="fas fa-user-edit"></i> Profile</li>
-            <li class="sidebar-nav-item" onclick="navigate('chat')"><i class="fas fa-comments"></i> Messages</li>
-            <li class="sidebar-nav-item" onclick="logout()" style="color:rgba(255,100,100,.8)"><i class="fas fa-sign-out-alt"></i> Sign Out</li>
-          </ul>
-        </aside>
-        <main class="dashboard-content" id="owner-content"></main>
-      </div>`;
-    this.loadTab('overview');
-  },
+registerPage('owner', async (main) => {
+  if (!HH.isLoggedIn() || (!HH.isOwner() && !HH.isAdmin())) {
+    main.innerHTML = `<div class="empty-state"><h2>Access Denied</h2><p>This page is for hostel owners only.</p><button class="btn btn-primary" onclick="showLoginModal()">Log In</button></div>`;
+    return;
+  }
 
-  tab(t, el) { document.querySelectorAll('.sidebar-nav-item').forEach(i=>i.classList.remove('active')); if(el) el.classList.add('active'); this.loadTab(t); },
+  const user = HH.getUser();
+  main.innerHTML = `
+    <div class="page-wrap">
+      <div class="page-header">
+        <div>
+          <h2>🏢 Owner Panel</h2>
+          <p class="subtitle">Manage your hostel listings and bookings</p>
+        </div>
+        <button class="btn btn-primary" onclick="showAddHostelModal()">+ Add Hostel</button>
+      </div>
 
-  async loadTab(t) {
-    const el = document.getElementById('owner-content');
-    el.innerHTML = `<div style="text-align:center;padding:40px"><div class="loader-spinner" style="margin:0 auto"></div></div>`;
-    if (t==='overview') await this.tabOverview(el);
-    else if (t==='my-hostels') await this.tabMyHostels(el);
-    else if (t==='add-hostel') this.tabAddHostel(el);
-    else if (t==='bookings') await this.tabBookings(el);
-  },
+      <div class="tabs-wrap">
+        <button class="tab active" data-tab="ow-hostels"  onclick="switchOwnerTab('ow-hostels')">🏠 My Hostels</button>
+        <button class="tab" data-tab="ow-bookings" onclick="switchOwnerTab('ow-bookings')">📋 Bookings</button>
+        <button class="tab" data-tab="ow-earnings" onclick="switchOwnerTab('ow-earnings')">💰 Earnings</button>
+      </div>
 
-  async tabOverview(el) {
-    const [hRes, bRes] = await Promise.allSettled([API.getMyHostels(), API.getOwnerBookings()]);
-    const hostels = hRes.value?.data||[]; const bookings = bRes.value?.data||[];
-    const revenue = bookings.filter(b=>b.payment_status==='completed').reduce((s,b)=>s+parseFloat(b.paid_amount||0),0);
+      <!-- My Hostels -->
+      <div id="ow-hostels" class="tab-content active">
+        <div id="owner-hostels-list"><div class="spinner-container"><div class="spinner"></div></div></div>
+      </div>
+
+      <!-- Bookings -->
+      <div id="ow-bookings" class="tab-content hidden">
+        <div id="owner-bookings-list"><div class="spinner-container"><div class="spinner"></div></div></div>
+      </div>
+
+      <!-- Earnings -->
+      <div id="ow-earnings" class="tab-content hidden">
+        <div id="owner-earnings-content"><div class="spinner-container"><div class="spinner"></div></div></div>
+      </div>
+    </div>`;
+
+  loadOwnerHostels();
+  loadOwnerBookings();
+  loadOwnerEarnings();
+});
+
+async function loadOwnerHostels() {
+  const el = document.getElementById('owner-hostels-list');
+  if (!el) return;
+  showLoading(el, 'Loading your hostels...');
+  try {
+    const hostels = await HH.api('/hostels/owner/my-hostels');
+    if (!hostels.length) {
+      el.innerHTML = `
+        <div class="empty-state">
+          <span class="empty-icon">🏠</span>
+          <p>You haven't listed any hostels yet.</p>
+          <button class="btn btn-primary" onclick="showAddHostelModal()">+ List Your First Hostel</button>
+        </div>`;
+      return;
+    }
+    el.innerHTML = hostels.map(h => `
+      <div class="owner-hostel-card">
+        <div class="owner-hostel-img">
+          <img src="${HH.escapeHtml(h.primary_image || '/images/default-hostel.jpg')}" alt="" onerror="this.src='/images/default-hostel.jpg'">
+        </div>
+        <div class="owner-hostel-body">
+          <div class="owner-hostel-header">
+            <h3>${HH.escapeHtml(h.name)}</h3>
+            <span class="badge badge-${h.status === 'approved' ? 'success' : h.status === 'pending' ? 'warning' : 'danger'}">${h.status}</span>
+          </div>
+          <p class="text-muted">📍 ${HH.escapeHtml(h.address || '')}</p>
+          <div class="owner-hostel-stats">
+            <span>💰 ${HH.formatCurrency(h.monthly_price)}/mo</span>
+            <span>🛏 ${h.room_type}</span>
+            <span>🏠 ${h.available_rooms}/${h.total_rooms} available</span>
+            <span>📋 ${h.active_bookings} active bookings</span>
+            <span>⭐ ${Number(h.average_rating || 0).toFixed(1)}</span>
+          </div>
+          ${h.status === 'pending' ? `<p class="hint">⏳ Awaiting admin approval. You'll be notified once approved.</p>` : ''}
+        </div>
+        <div class="owner-hostel-actions">
+          <button class="btn btn-outline btn-sm" onclick="navigate('hostel/${h.id}')">👁 View</button>
+          <button class="btn btn-primary btn-sm" onclick="showEditHostelModal(${h.id})">✏️ Edit</button>
+          <button class="btn btn-sm" onclick="showAddImagesModal(${h.id})">🖼 Photos</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteHostel(${h.id}, '${HH.escapeHtml(h.name)}')">🗑 Delete</button>
+        </div>
+      </div>`).join('');
+  } catch (err) { showError(el, err.message); }
+}
+
+async function loadOwnerBookings() {
+  const el = document.getElementById('owner-bookings-list');
+  if (!el) return;
+  showLoading(el, 'Loading bookings...');
+  try {
+    const bookings = await HH.api('/booking/owner');
+    if (!bookings.length) { showEmpty(el, 'No bookings yet', '📋'); return; }
     el.innerHTML = `
-      <h2 class="dashboard-title">🏢 Owner Dashboard</h2>
-      <div class="stats-grid">
-        <div class="stat-card"><div class="stat-card-icon blue"><i class="fas fa-building"></i></div><div class="stat-card-value">${hostels.length}</div><div class="stat-card-label">Total Hostels</div></div>
-        <div class="stat-card"><div class="stat-card-icon green"><i class="fas fa-door-open"></i></div><div class="stat-card-value">${hostels.reduce((s,h)=>s+(h.available_rooms||0),0)}</div><div class="stat-card-label">Vacant Rooms</div></div>
-        <div class="stat-card"><div class="stat-card-icon amber"><i class="fas fa-calendar-check"></i></div><div class="stat-card-value">${bookings.filter(b=>b.status==='confirmed').length}</div><div class="stat-card-label">Confirmed Bookings</div></div>
-        <div class="stat-card"><div class="stat-card-icon purple"><i class="fas fa-money-bill-wave"></i></div><div class="stat-card-value" style="font-size:1rem">KES ${(revenue/1000).toFixed(0)}K</div><div class="stat-card-label">Deposits Received</div></div>
-      </div>
-      <div class="card" style="margin-bottom:18px"><div class="card-title">Quick Actions</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <button class="btn btn-blue" onclick="OwnerPage.tab('add-hostel')"><i class="fas fa-plus"></i> Add Hostel</button>
-          <button class="btn btn-outline" onclick="OwnerPage.tab('bookings')"><i class="fas fa-calendar"></i> View Bookings</button>
-          <button class="btn btn-outline" onclick="navigate('chat')"><i class="fas fa-comments"></i> Messages</button>
-        </div>
-      </div>
-      ${bookings.slice(0,5).length?`<div class="card"><div class="card-title">Recent Bookings</div>
-        ${bookings.slice(0,5).map(b=>`<div style="display:flex;align-items:center;gap:11px;padding:10px 0;border-bottom:1px solid var(--gray-100)">
-          <div style="flex:1"><div style="font-weight:600;font-size:.875rem">${b.hostel_title}</div>
-          <div style="font-size:.78rem;color:var(--gray-500)">by ${b.student_name} • ${b.institution||''}</div></div>
-          ${statusBadge(b.status)}
-        </div>`).join('')}</div>`:''}`;
-  },
-
-  async tabMyHostels(el) {
-    const res = await API.getMyHostels(); const hostels = res.data||[];
-    el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:22px">
-      <h2 class="dashboard-title" style="margin:0">🏢 My Hostels</h2>
-      <button class="btn btn-blue" onclick="OwnerPage.tab('add-hostel')"><i class="fas fa-plus"></i> Add Hostel</button></div>
-      ${!hostels.length?`<div class="empty-state"><div class="icon">🏢</div><h3>No hostels yet</h3><button class="btn btn-blue" onclick="OwnerPage.tab('add-hostel')">Add Your First Hostel</button></div>`:`
-      <div class="hostels-grid">${hostels.map(h=>`<div class="hostel-card">
-        <div class="hostel-card-img"><img src="${h.primary_image||CONFIG.DEFAULT_HOSTEL}" onerror="this.src='${CONFIG.DEFAULT_HOSTEL}'" />
-          <span class="hostel-card-badge${h.status!=='available'?' full':''}">${h.status}</span>
-          <span style="position:absolute;bottom:8px;left:8px;background:${h.is_approved?'rgba(0,150,0,.8)':'rgba(200,100,0,.8)'};color:white;padding:1px 8px;border-radius:50px;font-size:.68rem">${h.is_approved?'✅ Live':'⏳ Pending'}</span>
-        </div>
-        <div class="hostel-card-body">
-          <div class="hostel-card-price">${formatKES(h.price_per_month)}<span>/mo</span></div>
-          <div class="hostel-card-title">${h.title}</div>
-          <div class="hostel-card-campus"><i class="fas fa-university"></i>${h.nearest_institution||h.location}</div>
-          <div style="font-size:.78rem;color:var(--gray-500)"><i class="fas fa-door-open"></i> ${h.available_rooms}/${h.total_rooms} available • <i class="fas fa-eye"></i> ${h.views_count} views</div>
-        </div>
-        <div class="hostel-card-footer">
-          <button class="btn btn-sm btn-outline" onclick="navigate('hostel',${h.id})"><i class="fas fa-eye"></i></button>
-          <button class="btn btn-sm btn-outline" onclick="OwnerPage.editHostel(${h.id})"><i class="fas fa-edit"></i> Edit</button>
-          <button class="btn btn-sm btn-red" onclick="OwnerPage.deleteHostel(${h.id},'${h.title.replace(/'/g,'')}')"><i class="fas fa-trash"></i></button>
-        </div>
-      </div>`).join('')}</div>`}`;
-  },
-
-  tabAddHostel(el, existing = null) {
-    el.innerHTML = `<h2 class="dashboard-title">${existing?'✏️ Edit Hostel':'🏢 Add New Hostel'}</h2>
-      <div class="card" style="max-width:720px">
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">Hostel Name *</label><input type="text" class="form-control" id="h-title" placeholder="e.g. Sunrise Student Hostels" value="${existing?.title||''}" /></div>
-          <div class="form-group"><label class="form-label">Room Type *</label><select class="form-control" id="h-type">
-            ${['single','double','triple','quad','ensuite','bedsitter','studio'].map(t=>`<option value="${t}" ${existing?.room_type===t?'selected':''}>${roomTypeName(t)}</option>`).join('')}
-          </select></div>
-        </div>
-        <div class="form-group"><label class="form-label">Description</label><textarea class="form-control" id="h-desc" rows="3" placeholder="Describe your hostel, facilities, vibe…">${existing?.description||''}</textarea></div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">Price per Month (KES) *</label><input type="number" class="form-control" id="h-price" value="${existing?.price_per_month||''}" /></div>
-          <div class="form-group"><label class="form-label">Deposit Amount (KES)</label><input type="number" class="form-control" id="h-deposit" placeholder="Same as monthly rent" value="${existing?.deposit_amount||''}" /></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">Total Rooms</label><input type="number" class="form-control" id="h-total" min="1" value="${existing?.total_rooms||1}" /></div>
-          <div class="form-group"><label class="form-label">Available Rooms</label><input type="number" class="form-control" id="h-avail" min="0" value="${existing?.available_rooms||1}" /></div>
-        </div>
-        <div class="form-group"><label class="form-label">Location Address *</label><input type="text" class="form-control" id="h-location" placeholder="e.g. Ngara, Nairobi" value="${existing?.location||''}" /></div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">County</label><select class="form-control" id="h-county">
-            ${['Nairobi','Kiambu','Nakuru','Mombasa','Kisumu','Uasin Gishu','Meru','Laikipia','Nyeri','Murang\'a','Machakos'].map(c=>`<option ${existing?.county===c?'selected':''}>${c}</option>`).join('')}
-          </select></div>
-          <div class="form-group"><label class="form-label">Sub-County / Estate</label><input type="text" class="form-control" id="h-sub" value="${existing?.sub_county||''}" /></div>
-        </div>
-        <div class="form-group"><label class="form-label">🎓 Nearest University / College</label><input type="text" class="form-control" id="h-inst" placeholder="e.g. Kenyatta University" value="${existing?.nearest_institution||''}" /></div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">Distance to Campus (km)</label><input type="number" class="form-control" id="h-dist" step="0.1" placeholder="e.g. 0.5" value="${existing?.distance_to_campus||''}" /></div>
-          <div class="form-group"><label class="form-label">Gender Policy</label><select class="form-control" id="h-gender">
-            <option value="any" ${existing?.gender_policy==='any'?'selected':''}>All Welcome</option>
-            <option value="male_only" ${existing?.gender_policy==='male_only'?'selected':''}>Male Only</option>
-            <option value="female_only" ${existing?.gender_policy==='female_only'?'selected':''}>Female Only</option>
-            <option value="mixed" ${existing?.gender_policy==='mixed'?'selected':''}>Mixed</option>
-          </select></div>
-        </div>
-        <div class="form-group"><label class="form-label">📍 GPS Location *</label>
-          <div style="display:flex;gap:8px">
-            <input type="number" class="form-control" id="h-lat" placeholder="Latitude (e.g. -1.2921)" step="any" value="${existing?.latitude||''}" style="flex:1" />
-            <input type="number" class="form-control" id="h-lng" placeholder="Longitude (e.g. 36.8219)" step="any" value="${existing?.longitude||''}" style="flex:1" />
-            <button class="btn btn-sm btn-outline" onclick="OwnerPage.openPinPicker()"><i class="fas fa-map-marker-alt"></i> Pin</button>
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
-          ${[['h-wifi','📶 WiFi'],['h-meals','🍽️ Meals Provided'],['h-security','🔒 Security'],
-             ['h-cctv','📹 CCTV'],['h-backup','⚡ Generator/Solar'],['h-laundry','🧺 Laundry'],
-             ['h-kitchen','🍳 Kitchen Access'],['h-common','📺 Common Room'],['h-study','📚 Study-Friendly'],
-             ['h-roommates','👥 Allows Roommates'],['h-parking','🚗 Parking'],['h-caretaker','👨‍💼 Caretaker'],
-          ].map(([id,label])=>`<label style="display:flex;align-items:center;gap:6px;font-size:.82rem;cursor:pointer"><input type="checkbox" id="${id}" ${existing?.[id.replace('h-','').replace('-','_')]?'checked':''} />${label}</label>`).join('')}
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label class="form-label">WiFi Speed</label><input type="text" class="form-control" id="h-wifi-speed" placeholder="e.g. 20 Mbps" value="${existing?.wifi_speed||''}" /></div>
-          <div class="form-group"><label class="form-label">Curfew Time</label><input type="text" class="form-control" id="h-curfew" placeholder="e.g. 11:00 PM" value="${existing?.curfew_time||''}" /></div>
-        </div>
-        <div class="form-group"><label class="form-label">Meals Description</label><input type="text" class="form-control" id="h-meals-desc" placeholder="e.g. Breakfast KES 100 | Dinner KES 150" value="${existing?.meals_description||''}" /></div>
-        <div class="form-group"><label class="form-label">House Rules</label><textarea class="form-control" id="h-rules" rows="2" placeholder="No alcohol, No smoking, No loud music after 10pm…">${existing?.rules||''}</textarea></div>
-
-        <!-- Nearby Amenities -->
-        <div class="card-title" style="margin-top:16px">🗺️ Add Nearby Amenities (optional)</div>
-        <div id="amenity-list"></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
-          <input type="text" class="form-control" id="am-name" placeholder="e.g. Naivas Supermarket" style="flex:1;min-width:140px" />
-          <select class="form-control" id="am-cat" style="min-width:120px">
-            ${['shop','supermarket','pharmacy','hospital','bank','atm','restaurant','cafe','gym','library','church','mosque','salon','bus_stop'].map(c=>`<option value="${c}">${c.replace('_',' ')}</option>`).join('')}
-          </select>
-          <input type="number" class="form-control" id="am-dist" placeholder="Distance (m)" style="width:120px" />
-          <button class="btn btn-sm btn-outline" onclick="OwnerPage.addAmenityRow()"><i class="fas fa-plus"></i></button>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">📸 Hostel Photos (up to 10)</label>
-          <div class="upload-area" onclick="document.getElementById('h-imgs').click()">
-            <i class="fas fa-cloud-upload-alt" style="font-size:1.8rem;color:var(--gray-300);display:block;margin-bottom:7px"></i>
-            <p style="color:var(--gray-500);font-size:.875rem">Click to upload photos</p>
-            <input type="file" id="h-imgs" accept="image/*" multiple style="display:none" onchange="OwnerPage.previewImgs(this)" />
-          </div>
-          <div class="upload-preview" id="img-preview"></div>
-        </div>
-        <button class="btn btn-blue btn-block btn-lg" id="submit-hostel-btn" onclick="OwnerPage.submitHostel(${existing?.id||'null'})">
-          <i class="fas fa-upload"></i> ${existing?'Update Hostel':'Submit for Approval'}
-        </button>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr>
+            <th>Booking</th><th>Student</th><th>Course</th><th>Hostel</th>
+            <th>Amount</th><th>Your Share</th><th>Status</th><th>Receipt</th><th>Actions</th>
+          </tr></thead>
+          <tbody>
+            ${bookings.map(b => `
+              <tr>
+                <td>#${b.id}<br><small>${HH.formatDate(b.created_at)}</small></td>
+                <td>
+                  <strong>${HH.escapeHtml(b.student_name)}</strong><br>
+                  <small>${HH.escapeHtml(b.institution || '')}</small><br>
+                  <a href="tel:${HH.escapeHtml(b.student_phone || '')}" class="contact-link">${HH.escapeHtml(b.student_phone || '')}</a>
+                </td>
+                <td>${HH.escapeHtml(b.course || '—')}</td>
+                <td>${HH.escapeHtml(b.hostel_name)}</td>
+                <td>${b.paid_amount ? HH.formatCurrency(b.paid_amount) : '—'}</td>
+                <td class="text-success">${b.owner_amount ? HH.formatCurrency(b.owner_amount) : '—'}</td>
+                <td>
+                  <span class="badge badge-${b.status === 'confirmed' ? 'success' : b.status === 'cancelled' || b.status === 'released' ? 'danger' : 'warning'}">${b.status}</span><br>
+                  <small class="badge badge-${b.payment_status === 'completed' ? 'success' : 'warning'}">${b.payment_status || 'unpaid'}</small>
+                </td>
+                <td><small>${HH.escapeHtml(b.mpesa_receipt || '—')}</small></td>
+                <td>
+                  <button class="btn btn-success btn-xs" onclick="contactStudent(${b.student_id}, '${HH.escapeHtml(b.student_name)}', '${HH.escapeHtml(b.student_phone || '')}')">
+                    💬
+                  </button>
+                  <a href="https://wa.me/${(b.student_phone||'').replace(/\+/,'').replace(/\s/g,'')}" target="_blank" class="btn btn-success btn-xs">📱</a>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
       </div>`;
-    this._amenities = [];
-  },
+  } catch (err) { showError(el, err.message); }
+}
 
-  _amenities: [],
-  addAmenityRow() {
-    const name = document.getElementById('am-name').value.trim();
-    const cat = document.getElementById('am-cat').value;
-    const dist = document.getElementById('am-dist').value;
-    if (!name) { showToast('Enter amenity name', 'error'); return; }
-    this._amenities.push({ name, category: cat, distance_m: parseInt(dist)||0 });
-    const list = document.getElementById('amenity-list');
-    list.innerHTML = this._amenities.map((a,i)=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--gray-50);border-radius:7px;margin-bottom:6px;font-size:.83rem">
-      <span>${amenityIcon(a.category)}</span><span style="flex:1">${a.name}</span><span style="color:var(--gray-400)">${a.distance_m}m</span>
-      <button class="btn btn-sm btn-red" onclick="OwnerPage._amenities.splice(${i},1);OwnerPage.addAmenityRow()"><i class="fas fa-times"></i></button>
+async function loadOwnerEarnings() {
+  const el = document.getElementById('owner-earnings-content');
+  if (!el) return;
+  showLoading(el, 'Loading earnings...');
+  try {
+    const bookings = await HH.api('/booking/owner');
+    const completed = bookings.filter(b => b.payment_status === 'completed');
+    const totalGross = completed.reduce((s, b) => s + Number(b.paid_amount || 0), 0);
+    const totalNet   = completed.reduce((s, b) => s + Number(b.owner_amount || 0), 0);
+    const totalComm  = completed.reduce((s, b) => s + Number(b.commission_amount || 0), 0);
+
+    el.innerHTML = `
+      <div class="stats-row">
+        <div class="stat-card"><span class="stat-number">${HH.formatCurrency(totalGross)}</span><span class="stat-label">Total Deposits Received</span></div>
+        <div class="stat-card badge-success"><span class="stat-number">${HH.formatCurrency(totalNet)}</span><span class="stat-label">Your Earnings (90%)</span></div>
+        <div class="stat-card"><span class="stat-number">${HH.formatCurrency(totalComm)}</span><span class="stat-label">Platform Fee (10%)</span></div>
+        <div class="stat-card"><span class="stat-number">${completed.length}</span><span class="stat-label">Paid Bookings</span></div>
+      </div>
+      <div class="earnings-note">
+        <p>💡 HostelHub deducts a <strong>10% platform fee</strong> from each deposit. Your net earnings (90%) are shown above.</p>
+      </div>`;
+  } catch (err) { showError(el, err.message); }
+}
+
+function showAddHostelModal() {
+  showModal('🏠 List New Hostel', buildHostelForm(), '', 'lg');
+}
+
+async function showEditHostelModal(hostelId) {
+  showLoading(document.getElementById('owner-hostels-list'), 'Loading hostel data...');
+  try {
+    const h = await HH.api(`/hostels/${hostelId}`);
+    showModal('✏️ Edit Hostel', buildHostelForm(h), '', 'lg');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+function buildHostelForm(h = null) {
+  const isEdit = !!h;
+  return `
+    <form id="hostel-form" onsubmit="saveHostelForm(event, ${h?.id || 'null'})">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Hostel Name *</label>
+          <input type="text" id="hf-name" value="${h ? HH.escapeHtml(h.name) : ''}" placeholder="e.g. Sunrise Student Apartments" required>
+        </div>
+        <div class="form-group">
+          <label>Room Type *</label>
+          <select id="hf-room-type" required>
+            ${['single','double','triple','ensuite','bedsitter','studio'].map(t =>
+              `<option value="${t}" ${h?.room_type === t ? 'selected' : ''}>${t.charAt(0).toUpperCase()+t.slice(1)}</option>`
+            ).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Address *</label>
+        <input type="text" id="hf-address" value="${h ? HH.escapeHtml(h.address || '') : ''}" placeholder="Street, Area, Nairobi" required>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>County</label>
+          <input type="text" id="hf-county" value="${h ? HH.escapeHtml(h.county || '') : ''}" placeholder="e.g. Nairobi">
+        </div>
+        <div class="form-group">
+          <label>Gender Policy *</label>
+          <select id="hf-gender">
+            ${['male_only','female_only','mixed','any'].map(g =>
+              `<option value="${g}" ${h?.gender_policy === g ? 'selected' : ''}>${g.replace('_',' ')}</option>`
+            ).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Nearest University/College</label>
+          <input type="text" id="hf-institution" value="${h ? HH.escapeHtml(h.nearest_institution || '') : ''}" placeholder="e.g. University of Nairobi">
+        </div>
+        <div class="form-group">
+          <label>Distance to Campus (km)</label>
+          <input type="number" id="hf-distance" value="${h?.distance_to_campus || ''}" step="0.1" min="0" placeholder="e.g. 0.5">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Monthly Rent (KES) *</label>
+          <input type="number" id="hf-price" value="${h?.monthly_price || ''}" min="1" placeholder="e.g. 8000" required>
+        </div>
+        <div class="form-group">
+          <label>Deposit Amount (KES) *</label>
+          <input type="number" id="hf-deposit" value="${h?.deposit_amount || ''}" min="1" placeholder="e.g. 8000" required>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Total Rooms *</label>
+          <input type="number" id="hf-rooms" value="${h?.total_rooms || ''}" min="1" placeholder="e.g. 20" required>
+        </div>
+        <div class="form-group">
+          <label>Curfew Time (optional)</label>
+          <input type="time" id="hf-curfew" value="${h?.curfew_time || ''}">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <textarea id="hf-desc" rows="3" placeholder="Describe your hostel — amenities, atmosphere, rules...">${h ? HH.escapeHtml(h.description || '') : ''}</textarea>
+      </div>
+      <!-- Amenities Checkboxes -->
+      <div class="form-group">
+        <label>Amenities</label>
+        <div class="amenity-checks">
+          <label class="checkbox-label"><input type="checkbox" id="hf-wifi"    ${h?.wifi           ? 'checked' : ''}> 📶 WiFi</label>
+          <label class="checkbox-label"><input type="checkbox" id="hf-meals"   ${h?.meals_provided ? 'checked' : ''}> 🍽️ Meals</label>
+          <label class="checkbox-label"><input type="checkbox" id="hf-study"   ${h?.study_friendly ? 'checked' : ''}> 📚 Study-Friendly</label>
+          <label class="checkbox-label"><input type="checkbox" id="hf-security" ${h?.security      ? 'checked' : ''}> 🔒 24h Security</label>
+          <label class="checkbox-label"><input type="checkbox" id="hf-power"   ${h?.backup_power  ? 'checked' : ''}> ⚡ Backup Power</label>
+          <label class="checkbox-label"><input type="checkbox" id="hf-roommates" ${h?.allows_roommates ? 'checked' : ''}> 🤝 Allows Roommates</label>
+        </div>
+      </div>
+      ${h?.meals_provided ? `
+      <div class="form-group">
+        <label>Meals Description</label>
+        <input type="text" id="hf-meals-desc" value="${HH.escapeHtml(h.meals_description || '')}" placeholder="e.g. Breakfast and dinner included">
+      </div>` : ''}
+      <div id="hostel-form-error" class="form-error hidden"></div>
+      <div class="modal-footer" style="padding:0;border:none;margin-top:20px">
+        <button type="button" class="btn btn-outline" onclick="closeModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="hostel-form-btn">
+          ${isEdit ? '💾 Save Changes' : '🏠 Submit for Approval'}
+        </button>
+      </div>
+    </form>`;
+}
+
+async function saveHostelForm(e, hostelId) {
+  e.preventDefault();
+  const errEl = document.getElementById('hostel-form-error');
+  const btn   = document.getElementById('hostel-form-btn');
+
+  const body = {
+    name:               document.getElementById('hf-name')?.value.trim(),
+    address:            document.getElementById('hf-address')?.value.trim(),
+    county:             document.getElementById('hf-county')?.value.trim(),
+    room_type:          document.getElementById('hf-room-type')?.value,
+    gender_policy:      document.getElementById('hf-gender')?.value,
+    nearest_institution: document.getElementById('hf-institution')?.value.trim(),
+    distance_to_campus: document.getElementById('hf-distance')?.value || null,
+    monthly_price:      document.getElementById('hf-price')?.value,
+    deposit_amount:     document.getElementById('hf-deposit')?.value,
+    total_rooms:        document.getElementById('hf-rooms')?.value,
+    description:        document.getElementById('hf-desc')?.value.trim(),
+    curfew_time:        document.getElementById('hf-curfew')?.value || null,
+    wifi:               document.getElementById('hf-wifi')?.checked,
+    meals_provided:     document.getElementById('hf-meals')?.checked,
+    study_friendly:     document.getElementById('hf-study')?.checked,
+    security:           document.getElementById('hf-security')?.checked,
+    backup_power:       document.getElementById('hf-power')?.checked,
+    allows_roommates:   document.getElementById('hf-roommates')?.checked,
+  };
+
+  if (!body.name || !body.address || !body.monthly_price || !body.deposit_amount || !body.total_rooms) {
+    errEl.textContent = 'Please fill in all required fields';
+    errEl.classList.remove('hidden');
+    return;
+  }
+
+  setButtonLoading(btn, true);
+  errEl.classList.add('hidden');
+
+  try {
+    if (hostelId) {
+      await HH.api(`/hostels/${hostelId}`, { method: 'PUT', body });
+      showToast('Hostel updated successfully!', 'success');
+    } else {
+      await HH.api('/hostels', { method: 'POST', body });
+      showToast('Hostel submitted for review! You\'ll be notified once approved.', 'success');
+    }
+    closeModal();
+    loadOwnerHostels();
+  } catch (err) {
+    errEl.textContent = err.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    setButtonLoading(btn, false, hostelId ? '💾 Save Changes' : '🏠 Submit for Approval');
+  }
+}
+
+function showAddImagesModal(hostelId) {
+  showModal('🖼 Add Photos', `
+    <div class="upload-area" onclick="document.getElementById('img-upload').click()">
+      <div class="upload-icon">📷</div>
+      <p>Click to select images</p>
+      <small>JPEG, PNG, WebP — max 10MB each</small>
+    </div>
+    <input type="file" id="img-upload" accept="image/*" multiple style="display:none" onchange="previewAndUploadImages(${hostelId}, this)">
+    <div id="img-preview" class="img-preview-grid"></div>
+    <div id="img-upload-progress" class="form-success hidden"></div>`, '', 'sm');
+}
+
+async function previewAndUploadImages(hostelId, input) {
+  const files = Array.from(input.files);
+  if (!files.length) return;
+
+  const previewEl  = document.getElementById('img-preview');
+  const progressEl = document.getElementById('img-upload-progress');
+
+  // Preview
+  previewEl.innerHTML = files.map(f => `
+    <div class="img-thumb">
+      <img src="${URL.createObjectURL(f)}" alt="${HH.escapeHtml(f.name)}">
+      <span>${HH.escapeHtml(f.name.slice(0,20))}</span>
     </div>`).join('');
-    document.getElementById('am-name').value=''; document.getElementById('am-dist').value='';
-  },
 
-  openPinPicker() {
-    MapModule.loadGoogleMaps().then(() => {
-      MapModule.openPinPicker(({ lat, lng, address }) => {
-        document.getElementById('h-lat').value = lat.toFixed(6);
-        document.getElementById('h-lng').value = lng.toFixed(6);
-        if (!document.getElementById('h-location').value) document.getElementById('h-location').value = address;
-        showToast('📍 Location pinned!', 'success');
-      });
+  // Upload
+  const formData = new FormData();
+  files.forEach(f => formData.append('images', f));
+
+  try {
+    progressEl.textContent = 'Uploading...';
+    progressEl.classList.remove('hidden');
+
+    const token    = HH.getToken();
+    const response = await fetch(`${HH.API_URL}/hostels/${hostelId}/images`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body:    formData,
     });
-  },
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    progressEl.textContent = '✅ ' + data.message;
+    showToast(data.message, 'success');
+    loadOwnerHostels();
+  } catch (err) {
+    progressEl.textContent = '❌ ' + err.message;
+    progressEl.style.color = 'red';
+  }
+}
 
-  previewImgs(input) {
-    const p = document.getElementById('img-preview'); p.innerHTML='';
-    Array.from(input.files).forEach((f,i)=>{
-      const d = document.createElement('div'); d.className='upload-preview-item';
-      d.innerHTML=`<img src="${URL.createObjectURL(f)}" /><span class="upload-preview-remove" onclick="this.parentElement.remove()"><i class="fas fa-times"></i></span>`;
-      p.appendChild(d);
-    });
-  },
-
-  async submitHostel(existingId) {
-    const btn = document.getElementById('submit-hostel-btn');
-    const title = document.getElementById('h-title').value;
-    const price = document.getElementById('h-price').value;
-    const location = document.getElementById('h-location').value;
-    const lat = document.getElementById('h-lat').value;
-    const lng = document.getElementById('h-lng').value;
-    if (!title||!price||!location||!lat||!lng) { showToast('Fill all required fields including GPS location', 'error'); return; }
-
-    btn.disabled=true; btn.innerHTML='<i class="fas fa-spinner fa-spin"></i> Submitting…';
-    const fd = new FormData();
-    const boolField = (id) => document.getElementById(id)?.checked ? 'true' : 'false';
-    Object.entries({ title, description:document.getElementById('h-desc').value, price_per_month:price,
-      deposit_amount:document.getElementById('h-deposit').value||price, location, county:document.getElementById('h-county').value,
-      sub_county:document.getElementById('h-sub').value, lat, lng, nearest_institution:document.getElementById('h-inst').value,
-      distance_to_campus:document.getElementById('h-dist').value, room_type:document.getElementById('h-type').value,
-      total_rooms:document.getElementById('h-total').value, available_rooms:document.getElementById('h-avail').value,
-      gender_policy:document.getElementById('h-gender').value, curfew_time:document.getElementById('h-curfew').value,
-      wifi_speed:document.getElementById('h-wifi-speed').value, meals_description:document.getElementById('h-meals-desc').value,
-      rules:document.getElementById('h-rules').value,
-      wifi:boolField('h-wifi'), meals_provided:boolField('h-meals'), security:boolField('h-security'),
-      cctv:boolField('h-cctv'), backup_power:boolField('h-backup'), laundry:boolField('h-laundry'),
-      kitchen_access:boolField('h-kitchen'), common_room:boolField('h-common'), study_friendly:boolField('h-study'),
-      allows_roommates:boolField('h-roommates'), parking:boolField('h-parking'), caretaker:boolField('h-caretaker'),
-      amenities_json:JSON.stringify(this._amenities||[]),
-    }).forEach(([k,v])=>fd.append(k,v));
-    const imgs = document.getElementById('h-imgs');
-    if (imgs.files.length) Array.from(imgs.files).forEach(f=>fd.append('images',f));
+async function deleteHostel(hostelId, name) {
+  confirmAction(`Delete "${name}"? This action cannot be undone.`, async () => {
     try {
-      const res = existingId ? await API.updateHostel(existingId, fd) : await API.addHostel(fd);
-      if (!res.success) throw new Error(res.message);
-      showToast(res.message, 'success'); this.loadTab('my-hostels');
-    } catch(e) { showToast(e.message, 'error'); btn.disabled=false; btn.innerHTML='<i class="fas fa-upload"></i> Submit for Approval'; }
-  },
+      await HH.api(`/hostels/${hostelId}`, { method: 'DELETE' });
+      showToast('Hostel deleted', 'success');
+      loadOwnerHostels();
+    } catch (err) { showToast(err.message, 'error'); }
+  });
+}
 
-  async tabBookings(el) {
-    const res = await API.getOwnerBookings(); const bookings = res.data||[];
-    el.innerHTML = `<h2 class="dashboard-title">📅 Student Bookings</h2>
-      ${!bookings.length?`<div class="empty-state"><div class="icon">📅</div><h3>No bookings yet</h3></div>`:`
-      <div class="table-wrapper"><table class="data-table">
-        <thead><tr><th>Hostel</th><th>Student</th><th>Institution</th><th>Status</th><th>Deposit</th><th>Receipt</th><th>Date</th></tr></thead>
-        <tbody>${bookings.map(b=>`<tr>
-          <td><strong>${b.hostel_title}</strong></td>
-          <td><strong>${b.student_name}</strong><br/><small>${b.student_phone}</small></td>
-          <td><small style="color:var(--blue-600)">${b.institution||'—'}<br/>${b.course||''} Yr${b.year_of_study||''}</small></td>
-          <td>${statusBadge(b.status)}</td>
-          <td><span class="badge ${b.payment_status==='completed'?'badge-green':'badge-amber'}">${b.payment_status==='completed'?'✅ Paid':'⏳ Unpaid'}</span></td>
-          <td><small>${b.mpesa_receipt_number||'—'}</small></td>
-          <td style="font-size:.78rem;color:var(--gray-400)">${formatDate(b.created_at)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>`}`;
-  },
+async function contactStudent(studentId, name, phone) {
+  try {
+    const data = await HH.api('/chat/start', {
+      method: 'POST',
+      body: { other_user_id: studentId },
+    });
+    navigate(`chat/${data.conversationId}`);
+  } catch (err) { showToast(err.message, 'error'); }
+}
 
-  async editHostel(id) {
-    const res = await API.getHostel(id);
-    if (!res.success) { showToast('Error loading hostel', 'error'); return; }
-    this.tabAddHostel(document.getElementById('owner-content'), res.data);
-  },
+function switchOwnerTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(c => {
+    c.classList.toggle('active', c.id === tab);
+    c.classList.toggle('hidden', c.id !== tab);
+  });
+}
 
-  async deleteHostel(id, title) {
-    if (!confirm(`Delete "${title}"? This cannot be undone.`)) return;
-    const res = await API.deleteHostel(id);
-    if (res.success) { showToast('Hostel deleted', 'info'); this.loadTab('my-hostels'); }
-    else showToast(res.message, 'error');
-  },
-};
-
-
+window.loadOwnerHostels   = loadOwnerHostels;
+window.loadOwnerBookings  = loadOwnerBookings;
+window.showAddHostelModal  = showAddHostelModal;
+window.showEditHostelModal = showEditHostelModal;
+window.saveHostelForm      = saveHostelForm;
+window.showAddImagesModal  = showAddImagesModal;
+window.previewAndUploadImages = previewAndUploadImages;
+window.deleteHostel        = deleteHostel;
+window.contactStudent      = contactStudent;
+window.switchOwnerTab      = switchOwnerTab;

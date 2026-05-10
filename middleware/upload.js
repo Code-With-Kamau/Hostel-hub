@@ -1,17 +1,46 @@
 const multer = require('multer');
-const path = require('path');
+const path   = require('path');
+const fs     = require('fs');
 
-function makeStorage(dest) {
+const ALLOWED_TYPES = /^image\/(jpeg|jpg|png|webp|gif)$/i;
+const MAX_SIZE      = 10 * 1024 * 1024; // 10 MB
+
+function makeStorage(subdir) {
+  const dest = path.join(__dirname, '..', 'uploads', subdir);
+  fs.mkdirSync(dest, { recursive: true });
+
   return multer.diskStorage({
-    destination: (req, file, cb) => cb(null, dest),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + Math.round(Math.random()*1e6) + path.extname(file.originalname)),
+    destination: (_req, _file, cb) => cb(null, dest),
+    filename:    (_req, file, cb) => {
+      const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+      cb(null, unique + path.extname(file.originalname).toLowerCase());
+    },
   });
 }
 
-const hostelUpload = multer({ storage: makeStorage('uploads/hostels/'), limits: { fileSize: 50 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => cb(null, /image|video/.test(file.mimetype)) });
+function fileFilter(_req, file, cb) {
+  if (ALLOWED_TYPES.test(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files (JPEG, PNG, WebP, GIF) are allowed'), false);
+  }
+}
 
-const profileUpload = multer({ storage: makeStorage('uploads/profiles/'), limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => cb(null, /image/.test(file.mimetype)) });
+const hostelUpload  = multer({ storage: makeStorage('hostels'),  fileFilter, limits: { fileSize: MAX_SIZE } });
+const profileUpload = multer({ storage: makeStorage('profiles'), fileFilter, limits: { fileSize: MAX_SIZE } });
 
-module.exports = { hostelUpload, profileUpload };
+// Error handler for multer errors
+function handleUploadError(err, req, res, next) {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File too large. Maximum size is 10 MB.' });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+  if (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  next();
+}
+
+module.exports = { hostelUpload, profileUpload, handleUploadError };

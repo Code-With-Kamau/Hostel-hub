@@ -1,108 +1,106 @@
 const axios = require('axios');
 
+const BASE_URL = process.env.MPESA_ENV === 'production'
+  ? 'https://api.safaricom.co.ke'
+  : 'https://sandbox.safaricom.co.ke';
+
+// ── Generate OAuth token ───────────────────────────────────────────────────
 async function getAccessToken() {
-  const key = process.env.MPESA_CONSUMER_KEY?.trim();
-  const secret = process.env.MPESA_CONSUMER_SECRET?.trim();
+  const key    = process.env.MPESA_CONSUMER_KEY;
+  const secret = process.env.MPESA_CONSUMER_SECRET;
 
-  const base = 'https://sandbox.safaricom.co.ke';
+  if (!key || !secret) throw new Error('M-Pesa credentials not configured');
 
-  try {
-    const { data } = await axios.get(
-      `${base}/oauth/v1/generate?grant_type=client_credentials`,
-      {
-        auth: { username: key, password: secret },
-        timeout: 15000,
-      }
-    );
-    console.log('✅ Access token OK');
-    return data.access_token;
-  } catch (err) {
-    const errMsg = err.response?.data?.errorMessage || err.message;
-    const status = err.response?.status;
-    console.log('❌ Token fetch failed. Status:', status, 'Message:', errMsg);
-    throw new Error(`M-Pesa token failed (${status}): ${errMsg}`);
-  }
+  const credentials = Buffer.from(`${key}:${secret}`).toString('base64');
+
+  const { data } = await axios.get(`${BASE_URL}/oauth/v1/generate?grant_type=client_credentials`, {
+    headers: { Authorization: `Basic ${credentials}` },
+    timeout: 10000,
+  });
+
+  return data.access_token;
 }
 
-function formatPhone(phone) {
-  let p = phone.toString().trim().replace(/\D/g, '');
-  if (p.startsWith('0')) p = '254' + p.slice(1);
-  if (p.startsWith('+')) p = p.slice(1);
-  if (!p.startsWith('254')) p = '254' + p;
-  console.log('Formatted phone:', p);
-  return p;
-}
+// ── STK Push (Lipa Na M-Pesa Online) ──────────────────────────────────────
+async function stkPush({ phone, amount, accountRef, description }) {
+  const token      = await getAccessToken();
+  const shortcode  = process.env.MPESA_SHORTCODE;
+  const passkey    = process.env.MPESA_PASSKEY;
+  const callbackUrl = process.env.MPESA_CALLBACK_URL;
 
-async function stkPush(phone, amount, bookingId, desc = 'HostelHub Deposit') {
-  const shortcode = process.env.MPESA_SHORTCODE?.trim();
-  const passkey = process.env.MPESA_PASSKEY?.trim();
-  const callbackUrl = process.env.MPESA_CALLBACK_URL?.trim();
-  const base = 'https://sandbox.safaricom.co.ke';
+  const timestamp = new Date().toISOString().replace(/[-T:.Z]/g, '').slice(0, 14);
+  const password  = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
 
-  // Validate all required env vars before making any request
-  if (!shortcode || !passkey || !callbackUrl) {
-    throw new Error(`Missing M-Pesa config — SHORTCODE: ${shortcode}, PASSKEY: ${!!passkey}, CALLBACK: ${callbackUrl}`);
-  }
-
-  console.log('=== STK PUSH START ===');
-  console.log('Shortcode:', shortcode);
-  console.log('CallbackURL:', callbackUrl);
-  console.log('Amount:', Math.ceil(amount));
-
-  const token = await getAccessToken();
-
-  // Generate timestamp in format YYYYMMDDHHmmss
-  const now = new Date();
-  const pad = (n) => n.toString().padStart(2, '0');
-  const timestamp =
-    now.getFullYear().toString() +
-    pad(now.getMonth() + 1) +
-    pad(now.getDate()) +
-    pad(now.getHours()) +
-    pad(now.getMinutes()) +
-    pad(now.getSeconds());
-
-  console.log('Timestamp:', timestamp);
-
-  const password = Buffer.from(shortcode + passkey + timestamp).toString('base64');
+  // Normalize phone to 254XXXXXXXXX
+  const normalizedPhone = normalizePhone(phone);
 
   const payload = {
     BusinessShortCode: shortcode,
-    Password: password,
-    Timestamp: timestamp,
-    TransactionType: 'CustomerPayBillOnline',
-    Amount: Math.ceil(parseFloat(amount)),
-    PartyA: formatPhone(phone),
-    PartyB: shortcode,
-    PhoneNumber: formatPhone(phone),
-    CallBackURL: callbackUrl,
-    AccountReference: `HOSTEL${bookingId}`,
-    TransactionDesc: desc,
+    Password:          password,
+    Timestamp:         timestamp,
+    TransactionType:   'CustomerPayBillOnline',
+    Amount:            Math.ceil(amount),
+    PartyA:            normalizedPhone,
+    PartyB:            shortcode,
+    PhoneNumber:       normalizedPhone,
+    CallBackURL:       callbackUrl,
+    AccountReference:  accountRef.slice(0, 12),
+    TransactionDesc:   description.slice(0, 13),
   };
 
-  console.log('Payload (no password):', { ...payload, Password: '***' });
+  const { data } = await axios.post(`${BASE_URL}/mpesa/stkpush/v1/processrequest`, payload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 15000,
+  });
 
-  try {
-    const { data } = await axios.post(
-      `${base}/mpesa/stkpush/v1/processrequest`,
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 15000,
-      }
-    );
-    console.log('✅ STK Push success:', data);
-    return data;
-  } catch (err) {
-    const status = err.response?.status;
-    const errData = err.response?.data;
-    console.log('❌ STK Push failed. Status:', status);
-    console.log('❌ STK Push error body:', JSON.stringify(errData, null, 2));
-    throw new Error(`STK Push failed (${status}): ${errData?.errorMessage || errData?.ResultDesc || err.message}`);
-  }
+  return data;
 }
 
-module.exports = { stkPush, formatPhone };6
+// ── B2C Refund ─────────────────────────────────────────────────────────────
+async function b2cRefund({ phone, amount, remarks }) {
+  const token          = await getAccessToken();
+  const shortcode      = process.env.MPESA_SHORTCODE;
+  const initiator      = process.env.MPESA_INITIATOR_NAME;
+  const securityCred   = process.env.MPESA_SECURITY_CREDENTIAL;
+  const resultUrl      = `${process.env.APP_URL}/api/mpesa/b2c/result`;
+  const timeoutUrl     = `${process.env.APP_URL}/api/mpesa/b2c/timeout`;
+
+  const normalizedPhone = normalizePhone(phone);
+
+  const payload = {
+    InitiatorName:      initiator,
+    SecurityCredential: securityCred,
+    CommandID:          'BusinessPayment',
+    Amount:             Math.ceil(amount),
+    PartyA:             shortcode,
+    PartyB:             normalizedPhone,
+    Remarks:            (remarks || 'Refund').slice(0, 100),
+    QueueTimeOutURL:    timeoutUrl,
+    ResultURL:          resultUrl,
+    Occasion:           'Deposit Refund',
+  };
+
+  const { data } = await axios.post(`${BASE_URL}/mpesa/b2c/v1/paymentrequest`, payload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 15000,
+  });
+
+  return data;
+}
+
+// ── Phone normalizer ───────────────────────────────────────────────────────
+function normalizePhone(phone) {
+  const cleaned = String(phone).replace(/\s+/g, '').replace(/^\+/, '');
+  if (cleaned.startsWith('254') && cleaned.length === 12) return cleaned;
+  if (cleaned.startsWith('0')   && cleaned.length === 10) return '254' + cleaned.slice(1);
+  if (cleaned.length === 9)                               return '254' + cleaned;
+  throw new Error(`Invalid phone number: ${phone}`);
+}
+
+module.exports = { getAccessToken, stkPush, b2cRefund, normalizePhone };

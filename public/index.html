@@ -1,136 +1,88 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HostelHub — Kenya's Student Hostel Finder</title>
-  <meta name="description" content="Find verified student hostels near your university, college or polytechnic in Kenya. Book with M-Pesa." />
-  <meta name="theme-color" content="#1e3a5f" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
-  <link rel="stylesheet" href="/css/main.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>%F0%9F%8E%93</text></svg>" />
+  <meta name="description" content="Find, book and pay for verified student hostels near Kenyan universities via M-Pesa.">
+  <link rel="icon" href="/images/favicon.ico" type="image/x-icon">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/main.css">
+  <link rel="stylesheet" href="/css/components.css">
 </head>
 <body>
 
-  <!--NAVBAR -->
-  <nav class="navbar" id="navbar">
-    <div class="nav-container">
-      <a class="nav-logo" onclick="navigate('home')">
-        <div class="logo-icon">🎓</div>
-        <span class="logo-text">Hostel<span class="logo-accent">Hub</span></span>
-      </a>
+  <!-- Navbar -->
+  <nav id="navbar" class="navbar"></nav>
 
-      <div class="nav-search">
-        <i class="fas fa-search" style="color:var(--gray-400);padding-left:13px;flex-shrink:0"></i>
-        <input type="text" id="nav-search-input" placeholder="University, hostel, area…" onkeydown="if(event.key==='Enter')searchFromNav()" />
-        <button onclick="searchFromNav()"><i class="fas fa-arrow-right"></i></button>
+  <!-- Toast Container -->
+  <div id="toast-container"></div>
+
+  <!-- Main Content -->
+  <main id="main-content" class="main-content"></main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <span class="brand-icon">🎓</span>
+        <span class="brand-text">HostelHub</span>
+        <p>The smart way for Kenyan students to find, book and pay for verified hostels.</p>
       </div>
-
-      <nav class="nav-links">
-        <a class="nav-link" onclick="navigate('home')">Browse</a>
-        <a class="nav-link special" onclick="navigate('community')"><i class="fas fa-users"></i> Community</a>
-
-        <!-- Guest -->
-        <div id="guest-nav" style="display:flex;gap:7px">
-          <button class="btn-login" onclick="navigate('login')">Sign In</button>
-          <button class="btn-signup" onclick="navigate('register')">Join Free</button>
+      <div class="footer-links">
+        <div>
+          <h4>Students</h4>
+          <a href="#home">Browse Hostels</a>
+          <a href="#dashboard">My Bookings</a>
+          <a href="#community">Roommate Finder</a>
         </div>
-
-        <!-- User -->
-        <div id="user-menu" style="display:none;align-items:center;gap:7px">
-          <div class="nav-notifications" style="position:relative">
-            <button class="notif-btn" id="notif-btn" onclick="toggleNotifications()" style="display:none">
-              <i class="fas fa-bell"></i>
-              <span class="notif-badge" id="notif-badge" style="display:none">0</span>
-            </button>
-            <div class="notif-dropdown" id="notif-dropdown">
-              <div class="notif-header"><span>Notifications</span><a style="font-size:.75rem;color:var(--blue-600);font-weight:500;cursor:pointer" onclick="markAllNotifsRead()">Mark all read</a></div>
-              <div id="notif-list"></div>
-            </div>
-          </div>
-
-          <div class="nav-user-menu" style="position:relative">
-            <button class="user-avatar-btn" onclick="toggleUserMenu()">
-              <img class="nav-avatar" id="nav-avatar" src="" alt="" />
-              <span id="nav-username">User</span>
-              <i class="fas fa-chevron-down" style="font-size:.62rem;color:var(--gray-400)"></i>
-            </button>
-            <div class="user-dropdown" id="user-dropdown">
-              <div class="dropdown-header">
-                <span id="dd-name">User Name</span>
-                <span class="dropdown-role" id="dd-role">student</span>
-                <div class="dropdown-inst" id="dd-inst"></div>
-              </div>
-              <div id="dd-role-links"></div>
-              <hr />
-              <a onclick="navigate('community')"><i class="fas fa-users"></i> Community</a>
-              <a onclick="navigate('chat')"><i class="fas fa-comments"></i> Messages</a>
-              <hr />
-              <a onclick="navigate('dashboard')"><i class="fas fa-user"></i> My Account</a>
-              <a class="logout-link" onclick="logout()"><i class="fas fa-sign-out-alt"></i> Sign Out</a>
-            </div>
-          </div>
+        <div>
+          <h4>Owners</h4>
+          <a href="#owner">List a Hostel</a>
+          <a href="#owner">Manage Bookings</a>
         </div>
-      </nav>
-
-      <button class="nav-mobile-toggle" onclick="toggleMobileMenu()"><i class="fas fa-bars"></i></button>
+        <div>
+          <h4>Support</h4>
+          <a href="mailto:support@hostelhub.co.ke">support@hostelhub.co.ke</a>
+          <a href="tel:+254700000001">+254 700 000 001</a>
+        </div>
+      </div>
     </div>
-  </nav>
-
-  <!-- Mobile Menu -->
-  <div class="mobile-menu" id="mobile-menu">
-    <a onclick="navigate('home');closeMobileMenu()"><i class="fas fa-building"></i> Browse Hostels</a>
-    <a onclick="navigate('community');closeMobileMenu()"><i class="fas fa-users"></i> Community</a>
-    <hr />
-    <div id="mobile-auth">
-      <a onclick="navigate('login')">Sign In</a>
-      <a onclick="navigate('register')" style="color:var(--blue-600);font-weight:600">Join Free</a>
+    <div class="footer-bottom">
+      <p>&copy; <span id="footer-year"></span> HostelHub. Built for Kenyan students 🇰🇪</p>
     </div>
-  </div>
+  </footer>
 
-  <!-- MAIN -->
-  <main id="app-content">
-    <div class="page-loader">
-      <div style="font-size:3rem;margin-bottom:10px">🎓</div>
-      <div class="loader-spinner"></div>
-      <p style="color:var(--gray-400);font-size:.84rem;margin-top:10px">Loading HostelHub…</p>
-    </div>
-  </main>
-
-  <!--MODAL-->
-  <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
-    <div class="modal" id="modal">
-      <button class="modal-close" onclick="closeModal({})"><i class="fas fa-times"></i></button>
-      <div class="modal-body" id="modal-body"></div>
-    </div>
-  </div>
-
-  <!--  TOAST-->
-  <div class="toast-container" id="toast-container"></div>
-
-  <!-- CHAT FAB  -->
-  <div class="chat-fab" id="chat-fab" onclick="navigate('chat')" title="Messages" style="display:flex">
-    <i class="fas fa-comments"></i>
-    <span class="chat-fab-badge" id="chat-fab-badge" style="display:none">0</span>
-  </div>
-
-  <!--  SCRIPTS -->
+  <!-- Socket.io CDN -->
   <script src="/socket.io/socket.io.js"></script>
+
+  <!-- Core JS — load order matters -->
   <script src="/js/config.js"></script>
   <script src="/js/utils.js"></script>
-  <script src="/js/map.js"></script>
-  <script src="/js/chat.js"></script>
+  <script src="/js/app.js"></script>
+
+  <!-- Page scripts (must come after app.js which defines registerPage) -->
   <script src="/js/pages/home.js"></script>
-  <script src="/js/pages/admin.js"></script>
-    <script src="/js/pages/community.js"></script>
   <script src="/js/pages/hostel-detail.js"></script>
   <script src="/js/pages/dashboard.js"></script>
   <script src="/js/pages/owner.js"></script>
-  <script src="/js/pages/auth-pages.js"></script>
-  <script src="/js/app.js"></script>
+  <script src="/js/pages/university.js"></script>
+  <script src="/js/pages/admin-page.js"></script>
+  <script src="/js/chat.js"></script>
 
+  <!-- Google Maps (async) -->
+  <script>
+    window.initMap = function() { if (window.HHMap) HHMap.init(); };
+  </script>
+  <script async defer
+    src="https://maps.googleapis.com/maps/api/js?key=GOOGLE_MAPS_API_KEY_PLACEHOLDER&libraries=places&callback=initMap">
+  </script>
+
+  <script>
+    // Inject real Maps API key from meta tag (set by server if needed), or let it default
+    document.getElementById('footer-year').textContent = new Date().getFullYear();
+  </script>
 </body>
 </html>

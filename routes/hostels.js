@@ -1,227 +1,427 @@
-const router = require('express').Router();
-const db = require('../database/db');
-const { authenticateToken, requireRole, optionalAuth } = require('../middleware/auth');
-const { hostelUpload } = require('../middleware/upload');
+const express = require('express');
+const db      = require('../database/db');
+const { authenticate, requireAdmin, optionalAuth } = require('../middleware/auth');
+const { hostelUpload, handleUploadError } = require('../middleware/upload');
+const path    = require('path');
+const fs      = require('fs');
 
-// Haversine distance (km)
-function haversine(lat1, lng1, lat2, lng2) {
-  const R = 6371, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+const router = express.Router();
+
+// ── Helper: build hostel query filters ────────────────────────────────────
+function buildFilters(query) {
+  const conditions = ['h.status = "approved"'];
+  const params     = [];
+
+  if (query.search) {
+    conditions.push('(h.name LIKE ? OR h.address LIKE ? OR h.nearest_institution LIKE ?)');
+    const s = `%${query.search}%`;
+    params.push(s, s, s);
+  }
+  if (query.room_type)     { conditions.push('h.room_type = ?');     params.push(query.room_type); }
+  if (query.gender_policy) { conditions.push('h.gender_policy = ?'); params.push(query.gender_policy); }
+  if (query.min_price)     { conditions.push('h.monthly_price >= ?'); params.push(Number(query.min_price)); }
+  if (query.max_price)     { conditions.push('h.monthly_price <= ?'); params.push(Number(query.max_price)); }
+  if (query.wifi === 'true')             { conditions.push('h.wifi = 1'); }
+  if (query.meals_provided === 'true')   { conditions.push('h.meals_provided = 1'); }
+  if (query.study_friendly === 'true')   { conditions.push('h.study_friendly = 1'); }
+  if (query.available === 'true')        { conditions.push('h.available_rooms > 0'); }
+  if (query.institution) {
+    conditions.push('h.nearest_institution LIKE ?');
+    params.push(`%${query.institution}%`);
+  }
+
+  return { conditions, params };
 }
 
-// GET all hostels with filters
-router.get('/all', optionalAuth, async (req, res) => {
+// ── GET /api/hostels ───────────────────────────────────────────────────────
+router.get('/', optionalAuth, async (req, res) => {
   try {
-    const { search, institution, room_type, min_price, max_price, county, gender_policy,
-      allows_roommates, wifi, meals_provided, study_friendly, security, backup_power,
-      lat, lng, radius = 10, sort = 'newest', page = 1, limit = 12 } = req.query;
-
-    let where = ['h.is_approved=1', "h.status != 'unlisted'"];
-    const vals = [];
-
-    if (search) { where.push('(h.title LIKE ? OR h.location LIKE ? OR h.nearest_institution LIKE ?)'); vals.push(...Array(3).fill(`%${search}%`)); }
-    if (institution) { where.push('h.nearest_institution LIKE ?'); vals.push(`%${institution}%`); }
-    if (room_type) { where.push('h.room_type=?'); vals.push(room_type); }
-    if (min_price) { where.push('h.price_per_month>=?'); vals.push(min_price); }
-    if (max_price) { where.push('h.price_per_month<=?'); vals.push(max_price); }
-    if (county) { where.push('h.county=?'); vals.push(county); }
-    if (gender_policy) { where.push('(h.gender_policy=? OR h.gender_policy="any")'); vals.push(gender_policy); }
-    if (allows_roommates === 'true') { where.push('h.allows_roommates=1'); }
-    if (wifi === 'true') { where.push('h.wifi=1'); }
-    if (meals_provided === 'true') { where.push('h.meals_provided=1'); }
-    if (study_friendly === 'true') { where.push('h.study_friendly=1'); }
-    if (security === 'true') { where.push('h.security=1'); }
-    if (backup_power === 'true') { where.push('h.backup_power=1'); }
-
-    const orderMap = {
-      newest: 'h.created_at DESC', price_asc: 'h.price_per_month ASC',
-      price_desc: 'h.price_per_month DESC', popular: 'h.views_count DESC',
-      rating: 'h.avg_rating DESC', distance: 'h.distance_to_campus ASC',
-    };
-    const orderBy = orderMap[sort] || 'h.created_at DESC';
+    const { conditions, params } = buildFilters(req.query);
+    const page  = Math.max(1, parseInt(req.query.page  || '1'));
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '12')));
     const offset = (page - 1) * limit;
-    const whereStr = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-    const [countRows] = await db.execute(`SELECT COUNT(*) as total FROM hostels h ${whereStr}`, vals);
-    const total = countRows[0].total;
+    const sortMap = {
+      price_asc:    'h.monthly_price ASC',
+      price_desc:   'h.monthly_price DESC',
+      rating:       'h.average_rating DESC',
+      newest:       'h.created_at DESC',
+      distance:     'h.distance_to_campus ASC',
+    };
+    const orderBy = sortMap[req.query.sort] || 'h.created_at DESC';
 
-    const [rows] = await db.execute(`
-      SELECT h.*, u.name as owner_name, u.phone as owner_phone,
-        (SELECT image_url FROM hostel_images WHERE hostel_id=h.id AND is_primary=1 LIMIT 1) as primary_image,
-        ${req.user ? `(SELECT COUNT(*) FROM saved_hostels WHERE user_id=${req.user.id} AND hostel_id=h.id) as is_saved,` : '0 as is_saved,'}
-        h.available_rooms > 0 as has_vacancy
-      FROM hostels h JOIN users u ON h.owner_id=u.id
-      ${whereStr} ORDER BY h.is_featured DESC, ${orderBy}
-      LIMIT ${parseInt(limit)} OFFSET ${offset}`, vals);
+    const where = conditions.join(' AND ');
 
-    let data = rows;
-    if (lat && lng) {
-      data = rows.map(h => ({
-        ...h,
-        distance: h.latitude ? haversine(parseFloat(lat), parseFloat(lng), h.latitude, h.longitude) : null
-      })).filter(h => !h.distance || h.distance <= parseFloat(radius))
-        .sort((a, b) => (a.distance || 999) - (b.distance || 999));
-    }
+    const [hostels] = await db.query(
+      `SELECT h.id, h.name, h.address, h.county, h.room_type, h.gender_policy,
+              h.monthly_price, h.deposit_amount, h.available_rooms, h.total_rooms,
+              h.wifi, h.meals_provided, h.study_friendly, h.security, h.backup_power,
+              h.nearest_institution, h.distance_to_campus, h.average_rating, h.total_reviews,
+              h.latitude, h.longitude, h.created_at,
+              u.name AS owner_name, u.phone AS owner_phone,
+              (SELECT image_path FROM hostel_images WHERE hostel_id = h.id AND is_primary = 1 LIMIT 1) AS primary_image
+       FROM hostels h
+       JOIN users u ON u.id = h.owner_id
+       WHERE ${where}
+       ORDER BY ${orderBy}
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
 
-    res.json({ success: true, data, total, page: parseInt(page), pages: Math.ceil(total / limit) });
-  } catch (e) { res.json({ success: false, message: e.message }); }
+    const [[{ total }]] = await db.query(
+      `SELECT COUNT(*) AS total FROM hostels h WHERE ${where}`,
+      params
+    );
+
+    return res.json({
+      hostels,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    });
+
+  } catch (err) {
+    console.error('Get hostels error:', err);
+    return res.status(500).json({ error: 'Failed to fetch hostels' });
+  }
 });
 
-// GET single hostel
+// ── GET /api/hostels/:id ───────────────────────────────────────────────────
 router.get('/:id', optionalAuth, async (req, res) => {
   try {
-    const [rows] = await db.execute(`
-      SELECT h.*, u.name as owner_name, u.phone as owner_phone, u.email as owner_email, u.profile_photo as owner_photo,
-        ${req.user ? `(SELECT COUNT(*) FROM saved_hostels WHERE user_id=${req.user.id} AND hostel_id=h.id) as is_saved` : '0 as is_saved'}
-      FROM hostels h JOIN users u ON h.owner_id=u.id WHERE h.id=?`, [req.params.id]);
-    if (!rows.length) return res.json({ success: false, message: 'Hostel not found' });
-    const hostel = rows[0];
-    const [images] = await db.execute('SELECT * FROM hostel_images WHERE hostel_id=? ORDER BY is_primary DESC', [req.params.id]);
-    const [reviews] = await db.execute(`
-      SELECT r.*, u.name as student_name, u.profile_photo as student_photo, u.institution, u.course
-      FROM reviews r JOIN users u ON r.student_id=u.id WHERE r.hostel_id=? ORDER BY r.created_at DESC LIMIT 10`, [req.params.id]);
-    const [amenities] = await db.execute('SELECT * FROM nearby_amenities WHERE hostel_id=? ORDER BY distance_m ASC', [req.params.id]);
+    const [rows] = await db.query(
+      `SELECT h.*, u.name AS owner_name, u.phone AS owner_phone, u.email AS owner_email
+       FROM hostels h
+       JOIN users u ON u.id = h.owner_id
+       WHERE h.id = ? AND h.status = 'approved'`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Hostel not found' });
 
-    await db.execute('UPDATE hostels SET views_count=views_count+1 WHERE id=?', [req.params.id]);
-    res.json({ success: true, data: { ...hostel, images, reviews, amenities } });
-  } catch (e) { res.json({ success: false, message: e.message }); }
+    const hostel = rows[0];
+
+    const [images]    = await db.query('SELECT * FROM hostel_images WHERE hostel_id = ?', [hostel.id]);
+    const [amenities] = await db.query('SELECT * FROM nearby_amenities WHERE hostel_id = ?', [hostel.id]);
+    const [reviews]   = await db.query(
+      `SELECT r.*, u.name AS student_name, u.profile_photo
+       FROM reviews r JOIN users u ON u.id = r.student_id
+       WHERE r.hostel_id = ? ORDER BY r.created_at DESC LIMIT 20`,
+      [hostel.id]
+    );
+
+    // Saved status for logged-in users
+    let isSaved = false;
+    if (req.user) {
+      const [saved] = await db.query(
+        'SELECT id FROM saved_hostels WHERE user_id = ? AND hostel_id = ?',
+        [req.user.id, hostel.id]
+      );
+      isSaved = saved.length > 0;
+    }
+
+    return res.json({ ...hostel, images, amenities, reviews, isSaved });
+
+  } catch (err) {
+    console.error('Get hostel error:', err);
+    return res.status(500).json({ error: 'Failed to fetch hostel' });
+  }
 });
 
-// POST add hostel (owner/admin)
-router.post('/add', authenticateToken, requireRole('owner', 'admin'), hostelUpload.array('images', 10), async (req, res) => {
+// ── POST /api/hostels ──────────────────────────────────────────────────────
+router.post('/', authenticate, async (req, res) => {
+  if (!['owner', 'admin'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Only hostel owners can create listings' });
+  }
+
+  const conn = await db.getConnection();
   try {
-    const f = req.body;
-    const [result] = await db.execute(`
-      INSERT INTO hostels (owner_id,title,description,location,county,sub_county,latitude,longitude,
-        nearest_institution,distance_to_campus,room_type,price_per_month,deposit_amount,
-        total_rooms,available_rooms,allows_roommates,max_roommates,gender_policy,study_friendly,
-        wifi,wifi_speed,meals_provided,meals_description,water_supply,electricity,backup_power,
-        security,cctv,caretaker,laundry,common_room,kitchen_access,fridge_access,cleaning_service,
-        no_alcohol,no_smoking,visitors_allowed,curfew_time,rules)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [req.user.id, f.title, f.description||null, f.location, f.county||null, f.sub_county||null,
-       f.lat||null, f.lng||null, f.nearest_institution||null, f.distance_to_campus||null,
-       f.room_type||'single', f.price_per_month, f.deposit_amount||f.price_per_month,
-       f.total_rooms||1, f.available_rooms||f.total_rooms||1,
-       f.allows_roommates==='true'?1:0, f.max_roommates||2, f.gender_policy||'any',
-       f.study_friendly==='true'?1:0, f.wifi==='true'?1:0, f.wifi_speed||null,
-       f.meals_provided==='true'?1:0, f.meals_description||null, f.water_supply||'piped',
-       f.electricity!=='false'?1:0, f.backup_power==='true'?1:0,
-       f.security==='true'?1:0, f.cctv==='true'?1:0, f.caretaker==='true'?1:0,
-       f.laundry==='true'?1:0, f.common_room==='true'?1:0, f.kitchen_access==='true'?1:0,
-       f.fridge_access==='true'?1:0, f.cleaning_service==='true'?1:0,
-       f.no_alcohol==='true'?1:0, f.no_smoking==='true'?1:0, f.visitors_allowed!=='false'?1:0,
-       f.curfew_time||null, f.rules||null]);
+    const {
+      name, description, address, county, latitude, longitude,
+      nearest_institution, distance_to_campus, room_type, gender_policy,
+      monthly_price, deposit_amount, total_rooms, wifi, meals_provided,
+      meals_description, study_friendly, security, backup_power,
+      allows_roommates, curfew_time, wifi_speed,
+    } = req.body;
+
+    if (!name || !address || !room_type || !monthly_price || !deposit_amount || !total_rooms) {
+      return res.status(400).json({ error: 'name, address, room_type, monthly_price, deposit_amount and total_rooms are required' });
+    }
+
+    if (Number(monthly_price) <= 0 || Number(deposit_amount) <= 0) {
+      return res.status(400).json({ error: 'Price and deposit must be positive numbers' });
+    }
+
+    if (Number(total_rooms) < 1) {
+      return res.status(400).json({ error: 'Total rooms must be at least 1' });
+    }
+
+    await conn.beginTransaction();
+
+    const [result] = await conn.query(
+      `INSERT INTO hostels (owner_id, name, description, address, county, latitude, longitude,
+        nearest_institution, distance_to_campus, room_type, gender_policy,
+        monthly_price, deposit_amount, total_rooms, available_rooms,
+        wifi, meals_provided, meals_description, study_friendly, security,
+        backup_power, allows_roommates, curfew_time, wifi_speed, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?)`,
+      [
+        req.user.id, name, description || null, address, county || null,
+        latitude || null, longitude || null, nearest_institution || null,
+        distance_to_campus || null, room_type, gender_policy || 'any',
+        monthly_price, deposit_amount, total_rooms, total_rooms,
+        wifi ? 1 : 0, meals_provided ? 1 : 0, meals_description || null,
+        study_friendly ? 1 : 0, security ? 1 : 0, backup_power ? 1 : 0,
+        allows_roommates ? 1 : 0, curfew_time || null, wifi_speed || null,
+        req.user.role === 'admin' ? 'approved' : 'pending',
+      ]
+    );
 
     const hostelId = result.insertId;
-    if (req.files?.length) {
+
+    // Amenities
+    if (Array.isArray(req.body.amenities)) {
+      for (const a of req.body.amenities) {
+        if (a.category && a.name) {
+          await conn.query(
+            'INSERT INTO nearby_amenities (hostel_id, category, name, distance_m) VALUES (?, ?, ?, ?)',
+            [hostelId, a.category, a.name, a.distance_m || 0]
+          );
+        }
+      }
+    }
+
+    await conn.commit();
+
+    return res.status(201).json({
+      message: req.user.role === 'admin'
+        ? 'Hostel created and approved'
+        : 'Hostel submitted for review. You will be notified once approved.',
+      hostelId,
+    });
+
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    console.error('Create hostel error:', err);
+    return res.status(500).json({ error: 'Failed to create hostel' });
+  } finally {
+    conn.release();
+  }
+});
+
+// ── POST /api/hostels/:id/images ───────────────────────────────────────────
+router.post('/:id/images',
+  authenticate,
+  hostelUpload.array('images', 10),
+  handleUploadError,
+  async (req, res) => {
+    try {
+      const [rows] = await db.query(
+        'SELECT id, owner_id FROM hostels WHERE id = ?', [req.params.id]
+      );
+      if (!rows.length) return res.status(404).json({ error: 'Hostel not found' });
+      if (rows[0].owner_id !== req.user.id && req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Not your hostel' });
+      }
+
+      if (!req.files || !req.files.length) {
+        return res.status(400).json({ error: 'No images provided' });
+      }
+
+      const [existingImages] = await db.query(
+        'SELECT COUNT(*) AS cnt FROM hostel_images WHERE hostel_id = ?', [req.params.id]
+      );
+      const hasPrimary = existingImages[0].cnt === 0;
+
       for (let i = 0; i < req.files.length; i++) {
-        await db.execute('INSERT INTO hostel_images (hostel_id,image_url,is_primary) VALUES (?,?,?)',
-          [hostelId, '/uploads/hostels/' + req.files[i].filename, i === 0 ? 1 : 0]);
+        const imagePath = '/uploads/hostels/' + req.files[i].filename;
+        await db.query(
+          'INSERT INTO hostel_images (hostel_id, image_path, is_primary) VALUES (?, ?, ?)',
+          [req.params.id, imagePath, hasPrimary && i === 0 ? 1 : 0]
+        );
+      }
+
+      return res.json({ message: `${req.files.length} image(s) uploaded successfully` });
+    } catch (err) {
+      console.error('Upload images error:', err);
+      return res.status(500).json({ error: 'Failed to upload images' });
+    }
+  }
+);
+
+// ── PUT /api/hostels/:id ───────────────────────────────────────────────────
+router.put('/:id', authenticate, async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT * FROM hostels WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Hostel not found' });
+
+    const hostel = rows[0];
+    if (hostel.owner_id !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Not authorized to edit this hostel' });
+    }
+
+    const fields = [
+      'name','description','address','county','latitude','longitude',
+      'nearest_institution','distance_to_campus','room_type','gender_policy',
+      'monthly_price','deposit_amount','total_rooms','wifi','meals_provided',
+      'meals_description','study_friendly','security','backup_power',
+      'allows_roommates','curfew_time','wifi_speed',
+    ];
+
+    const updates = [];
+    const values  = [];
+    for (const f of fields) {
+      if (req.body[f] !== undefined) {
+        updates.push(`${f} = ?`);
+        values.push(req.body[f]);
       }
     }
-    // Add nearby amenities if provided
-    if (f.amenities_json) {
-      const amenities = JSON.parse(f.amenities_json);
-      for (const a of amenities) {
-        await db.execute('INSERT INTO nearby_amenities (hostel_id,name,category,distance_m) VALUES (?,?,?,?)',
-          [hostelId, a.name, a.category, a.distance_m]);
-      }
+
+    if (!updates.length) return res.status(400).json({ error: 'No valid fields to update' });
+
+    values.push(req.params.id);
+    await db.query(`UPDATE hostels SET ${updates.join(', ')} WHERE id = ?`, values);
+
+    return res.json({ message: 'Hostel updated successfully' });
+
+  } catch (err) {
+    console.error('Update hostel error:', err);
+    return res.status(500).json({ error: 'Failed to update hostel' });
+  }
+});
+
+// ── PATCH /api/hostels/:id/status (admin only) ─────────────────────────────
+router.patch('/:id/status', authenticate, requireAdmin, async (req, res) => {
+  const { status } = req.body;
+  if (!['approved', 'rejected', 'pending'].includes(status)) {
+    return res.status(400).json({ error: 'Status must be approved, rejected, or pending' });
+  }
+
+  try {
+    const [rows] = await db.query('SELECT id FROM hostels WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Hostel not found' });
+
+    await db.query('UPDATE hostels SET status = ? WHERE id = ?', [status, req.params.id]);
+
+    await db.query(
+      'INSERT INTO admin_logs (admin_id, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?)',
+      [req.user.id, `hostel_${status}`, 'hostel', req.params.id, `Hostel status changed to ${status}`]
+    );
+
+    return res.json({ message: `Hostel ${status} successfully` });
+
+  } catch (err) {
+    console.error('Update hostel status error:', err);
+    return res.status(500).json({ error: 'Failed to update hostel status' });
+  }
+});
+
+// ── DELETE /api/hostels/:id ────────────────────────────────────────────────
+router.delete('/:id', authenticate, async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT id, owner_id FROM hostels WHERE id = ?', [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Hostel not found' });
+    if (rows[0].owner_id !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Not authorized' });
     }
 
-    await db.execute(`INSERT INTO notifications (user_id,title,message,type) VALUES (1,?,?,?)`,
-      ['New Hostel Submitted', `${req.user.name} submitted "${f.title}" for approval`, 'hostel']);
-
-    res.json({ success: true, message: 'Hostel submitted for approval! We will review within 24hrs.', id: hostelId });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
-// PUT update hostel
-router.put('/:id', authenticateToken, hostelUpload.array('images', 10), async (req, res) => {
-  try {
-    const [rows] = await db.execute('SELECT * FROM hostels WHERE id=?', [req.params.id]);
-    if (!rows.length) return res.json({ success: false, message: 'Not found' });
-    if (rows[0].owner_id !== req.user.id && req.user.role !== 'admin')
-      return res.json({ success: false, message: 'Not authorized' });
-    const f = req.body;
-    await db.execute(`UPDATE hostels SET title=?,description=?,location=?,county=?,price_per_month=?,
-      room_type=?,allows_roommates=?,max_roommates=?,gender_policy=?,study_friendly=?,available_rooms=?,
-      wifi=?,meals_provided=?,meals_description=?,security=?,backup_power=?,rules=?,curfew_time=? WHERE id=?`,
-      [f.title, f.description||null, f.location, f.county||null, f.price_per_month,
-       f.room_type||'single', f.allows_roommates==='true'?1:0, f.max_roommates||2,
-       f.gender_policy||'any', f.study_friendly==='true'?1:0, f.available_rooms||0,
-       f.wifi==='true'?1:0, f.meals_provided==='true'?1:0, f.meals_description||null,
-       f.security==='true'?1:0, f.backup_power==='true'?1:0, f.rules||null, f.curfew_time||null,
-       req.params.id]);
-    if (req.files?.length) {
-      for (let i = 0; i < req.files.length; i++)
-        await db.execute('INSERT INTO hostel_images (hostel_id,image_url,is_primary) VALUES (?,?,0)',
-          [req.params.id, '/uploads/hostels/' + req.files[i].filename]);
+    const [activeBookings] = await db.query(
+      "SELECT id FROM bookings WHERE hostel_id = ? AND status IN ('pending','confirmed') LIMIT 1",
+      [req.params.id]
+    );
+    if (activeBookings.length) {
+      return res.status(400).json({ error: 'Cannot delete hostel with active bookings' });
     }
-    res.json({ success: true, message: 'Hostel updated' });
-  } catch (e) { res.json({ success: false, message: e.message }); }
+
+    await db.query('DELETE FROM hostels WHERE id = ?', [req.params.id]);
+    return res.json({ message: 'Hostel deleted successfully' });
+
+  } catch (err) {
+    console.error('Delete hostel error:', err);
+    return res.status(500).json({ error: 'Failed to delete hostel' });
+  }
 });
 
-// DELETE hostel
-router.delete('/:id', authenticateToken, async (req, res) => {
-  try {
-    const [rows] = await db.execute('SELECT owner_id FROM hostels WHERE id=?', [req.params.id]);
-    if (!rows.length) return res.json({ success: false, message: 'Not found' });
-    if (rows[0].owner_id !== req.user.id && req.user.role !== 'admin')
-      return res.json({ success: false, message: 'Not authorized' });
-    await db.execute('DELETE FROM hostels WHERE id=?', [req.params.id]);
-    res.json({ success: true, message: 'Hostel deleted' });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
+// ── POST /api/hostels/:id/reviews ─────────────────────────────────────────
+router.post('/:id/reviews', authenticate, async (req, res) => {
+  if (req.user.role !== 'student') {
+    return res.status(403).json({ error: 'Only students can leave reviews' });
+  }
 
-// GET owner's hostels
-router.get('/owner/my', authenticateToken, requireRole('owner', 'admin'), async (req, res) => {
-  try {
-    const [data] = await db.execute(`
-      SELECT h.*, (SELECT image_url FROM hostel_images WHERE hostel_id=h.id AND is_primary=1 LIMIT 1) as primary_image,
-        (SELECT COUNT(*) FROM bookings WHERE hostel_id=h.id) as bookings_count
-      FROM hostels h WHERE h.owner_id=? ORDER BY h.created_at DESC`, [req.user.id]);
-    res.json({ success: true, data });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
+  const { rating, comment } = req.body;
+  const ratingNum = parseInt(rating);
 
-// Toggle save
-router.post('/:id/save', authenticateToken, async (req, res) => {
+  if (!ratingNum || ratingNum < 1 || ratingNum > 5) {
+    return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+  }
+
+  const conn = await db.getConnection();
   try {
-    const [exists] = await db.execute('SELECT id FROM saved_hostels WHERE user_id=? AND hostel_id=?', [req.user.id, req.params.id]);
-    if (exists.length) {
-      await db.execute('DELETE FROM saved_hostels WHERE user_id=? AND hostel_id=?', [req.user.id, req.params.id]);
-      res.json({ success: true, saved: false, message: 'Removed from saved' });
-    } else {
-      await db.execute('INSERT INTO saved_hostels (user_id,hostel_id) VALUES (?,?)', [req.user.id, req.params.id]);
-      res.json({ success: true, saved: true, message: 'Hostel saved!' });
+    const [hostel] = await db.query(
+      "SELECT id FROM hostels WHERE id = ? AND status = 'approved'", [req.params.id]
+    );
+    if (!hostel.length) return res.status(404).json({ error: 'Hostel not found' });
+
+    // Must have a completed/released booking to review
+    const [booking] = await db.query(
+      "SELECT id FROM bookings WHERE hostel_id = ? AND student_id = ? AND status IN ('confirmed','released') LIMIT 1",
+      [req.params.id, req.user.id]
+    );
+    if (!booking.length) {
+      return res.status(403).json({ error: 'You can only review a hostel you have stayed in' });
     }
-  } catch (e) { res.json({ success: false, message: e.message }); }
+
+    await conn.beginTransaction();
+
+    await conn.query(
+      `INSERT INTO reviews (hostel_id, student_id, rating, comment)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE rating = VALUES(rating), comment = VALUES(comment)`,
+      [req.params.id, req.user.id, ratingNum, comment || null]
+    );
+
+    // Recalculate average
+    await conn.query(
+      `UPDATE hostels h SET
+         average_rating = (SELECT ROUND(AVG(rating), 1) FROM reviews WHERE hostel_id = h.id),
+         total_reviews  = (SELECT COUNT(*) FROM reviews WHERE hostel_id = h.id)
+       WHERE h.id = ?`,
+      [req.params.id]
+    );
+
+    await conn.commit();
+    return res.json({ message: 'Review submitted successfully' });
+
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    console.error('Review error:', err);
+    return res.status(500).json({ error: 'Failed to submit review' });
+  } finally {
+    conn.release();
+  }
 });
 
-// GET saved hostels
-router.get('/saved/list', authenticateToken, async (req, res) => {
-  try {
-    const [data] = await db.execute(`
-      SELECT h.*, (SELECT image_url FROM hostel_images WHERE hostel_id=h.id AND is_primary=1 LIMIT 1) as primary_image
-      FROM saved_hostels s JOIN hostels h ON s.hostel_id=h.id WHERE s.user_id=? ORDER BY s.created_at DESC`, [req.user.id]);
-    res.json({ success: true, data });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
+// ── GET /api/hostels/owner/my-hostels ─────────────────────────────────────
+router.get('/owner/my-hostels', authenticate, async (req, res) => {
+  if (!['owner', 'admin'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Only owners can view their listings' });
+  }
 
-// POST review
-router.post('/:id/review', authenticateToken, requireRole('student'), async (req, res) => {
   try {
-    const { rating, review_text } = req.body;
-    await db.execute(`INSERT INTO reviews (hostel_id,student_id,rating,review_text) VALUES (?,?,?,?)
-      ON DUPLICATE KEY UPDATE rating=VALUES(rating), review_text=VALUES(review_text)`,
-      [req.params.id, req.user.id, rating, review_text || null]);
-    await db.execute(`UPDATE hostels SET avg_rating=(SELECT AVG(rating) FROM reviews WHERE hostel_id=?),
-      review_count=(SELECT COUNT(*) FROM reviews WHERE hostel_id=?) WHERE id=?`,
-      [req.params.id, req.params.id, req.params.id]);
-    res.json({ success: true, message: 'Review submitted!' });
-  } catch (e) { res.json({ success: false, message: e.message }); }
+    const [rows] = await db.query(
+      `SELECT h.*,
+              (SELECT image_path FROM hostel_images WHERE hostel_id = h.id AND is_primary = 1 LIMIT 1) AS primary_image,
+              (SELECT COUNT(*) FROM bookings WHERE hostel_id = h.id AND status = 'confirmed') AS active_bookings
+       FROM hostels h
+       WHERE h.owner_id = ?
+       ORDER BY h.created_at DESC`,
+      [req.user.id]
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error('My hostels error:', err);
+    return res.status(500).json({ error: 'Failed to fetch your hostels' });
+  }
 });
 
 module.exports = router;

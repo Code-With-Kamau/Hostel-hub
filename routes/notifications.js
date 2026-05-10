@@ -1,26 +1,53 @@
-const router = require('express').Router();
-const db = require('../database/db');
-const { authenticateToken } = require('../middleware/auth');
+const express = require('express');
+const db      = require('../database/db');
+const { authenticate } = require('../middleware/auth');
 
-router.get('/', authenticateToken, async (req, res) => {
+const router = express.Router();
+
+router.get('/', authenticate, async (req, res) => {
   try {
-    const [data] = await db.execute('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 30', [req.user.id]);
-    res.json({ success: true, data });
-  } catch (e) { res.json({ success: false, message: e.message }); }
+    const limit = Math.min(100, parseInt(req.query.limit || '30'));
+    const [rows] = await db.query(
+      'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
+      [req.user.id, limit]
+    );
+    return res.json(rows);
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
 });
 
-router.put('/read-all', authenticateToken, async (req, res) => {
+router.put('/read-all', authenticate, async (req, res) => {
   try {
-    await db.execute('UPDATE notifications SET is_read=1 WHERE user_id=?', [req.user.id]);
-    res.json({ success: true });
-  } catch (e) { res.json({ success: false, message: e.message }); }
+    await db.query('UPDATE notifications SET is_read = 1 WHERE user_id = ?', [req.user.id]);
+    return res.json({ message: 'All notifications marked as read' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to update notifications' });
+  }
 });
 
-router.put('/:id/read', authenticateToken, async (req, res) => {
+router.put('/:id/read', authenticate, async (req, res) => {
   try {
-    await db.execute('UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?', [req.params.id, req.user.id]);
-    res.json({ success: true });
-  } catch (e) { res.json({ success: false, message: e.message }); }
+    await db.query(
+      'UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?',
+      [req.params.id, req.user.id]
+    );
+    return res.json({ message: 'Notification marked as read' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to update notification' });
+  }
+});
+
+router.delete('/:id', authenticate, async (req, res) => {
+  try {
+    await db.query(
+      'DELETE FROM notifications WHERE id = ? AND user_id = ?',
+      [req.params.id, req.user.id]
+    );
+    return res.json({ message: 'Notification deleted' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to delete notification' });
+  }
 });
 
 module.exports = router;
